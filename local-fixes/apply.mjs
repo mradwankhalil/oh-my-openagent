@@ -34,7 +34,7 @@ const git = (args) => execFileSync("git", args, quiet).trim()
  *
  * Git history is NOT a reliable test: the same fix exists under several SHAs (the original
  * commit, the variant ported onto a newer base, and any cherry-pick of either), so
- * `merge-base --is-ancestor` reports \"missing\" for an equivalent change and the applier would
+ * `merge-base --is-ancestor` reports "missing" for an equivalent change and the applier would
  * try to re-apply it. Marker strings in the source are SHA-independent, so ask the code.
  */
 function fixAlreadyPresent(fix) {
@@ -42,7 +42,7 @@ function fixAlreadyPresent(fix) {
   if (markers.length === 0) return false
   return markers.every((marker) => {
     try {
-      return git(["grep", "-l", "-F", "--", "packages/omo-opencode/src", marker]).length > 0
+      return git(["grep", "-l", "-F", marker, "--", "packages/omo-opencode/src"]).length > 0
     } catch {
       return false
     }
