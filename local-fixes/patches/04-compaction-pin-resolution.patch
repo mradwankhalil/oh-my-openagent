@@ -1,0 +1,693 @@
+﻿From 06aef99f5a9fff39a2d5995d125d1f4f275da546 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Sun, 20 Sep 2026 07:02:32 +0300
+Subject: [PATCH] fix(compaction): make the summarizer pin resolve, log why,
+ and never deadlock
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The pinned compaction summarizer (`agents.<key>.compaction.model`) failed silently.
+`resolveCompactionModel` returned the session model on every failure path without
+logging anything, and the preemptive-compaction failure log printed the *cached session*
+model rather than the resolved target — so a dead pin was indistinguishable from a
+working one.
+
+Verified in production over one session: four compaction runs summarized on
+`opencode-go/deepseek-v4.1-flash` while the config pinned `zai-coding-plan/glm-5.3-flash`.
+Zero GLM calls were even set up (`llm runtime selected` never named the pinned provider),
+each run exceeded the 120s budget, two produced empty summaries, and the context climbed
+to 97% before one attempt finally landed. The hook's own log only ever said
+"Compaction failed", naming the session model.
+
+Changes:
+- `resolveCompactionModelDecision()` returns source/reason/agentName/agentConfigKey/
+  pinnedModel so callers can log the decision and tests can assert *why* a model was chosen.
+  `resolveCompactionModel()` stays as a thin wrapper (still used by the degradation monitor
+  and the anthropic context-window recovery path).
+- Observed-agent fallback: the agent is cached alongside the tokens it is cached with, so pin
+  resolution no longer depends solely on the in-memory session-agent map.
+- Lookup chain: exact key -> case-insensitive -> persona-suffixed base key, with the base
+  fallback restricted to canonical agents (`AGENT_DISPLAY_NAMES`) so an unrelated custom
+  agent cannot borrow a pinned agent's summarizer.
+- Stall release: a summarize that never settles can no longer hold the admission guard
+  forever. Attempt tokens ensure a superseded attempt cannot clear a newer attempt's guard,
+  and the guard map is hook-owned so `session.deleted` clears it with the rest.
+- The degradation monitor's recovery summarize now honours the same pin.
+- Tests: pinned key, display name, persona-suffixed variant, custom-agent refusal, missing
+  session-agent fallback, no-pin, no-agent, malformed pin, missing config, multi-segment
+  model ids, and the stall-release path with its log assertion.
+
+Evidence: tsgo typecheck exit 0; 62 tests across the compaction suites pass; full build
+exit 0; bundle markers verified in dist/index.js.
+---
+ ...eemptive-compaction-degradation-monitor.ts |   2 +
+ .../hooks/preemptive-compaction-trigger.ts    |  70 ++++++--
+ .../src/hooks/preemptive-compaction-types.ts  |  12 ++
+ .../src/hooks/preemptive-compaction.test.ts   |  69 ++++++++
+ .../src/hooks/preemptive-compaction.ts        |   5 +
+ .../shared/compaction-model-resolver.test.ts  | 160 ++++++++++++++++++
+ .../hooks/shared/compaction-model-resolver.ts | 124 ++++++++++++--
+ 7 files changed, 414 insertions(+), 28 deletions(-)
+ create mode 100644 packages/omo-opencode/src/hooks/shared/compaction-model-resolver.test.ts
+
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-degradation-monitor.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-degradation-monitor.ts
+index 29605ac96..5a8328699 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-degradation-monitor.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-degradation-monitor.ts
+@@ -14,6 +14,7 @@ declare function clearTimeout(timeoutID: unknown): void
+ interface CompactionTargetState {
+   providerID: string
+   modelID: string
++  agent?: string
+ }
+ 
+ interface ClientLike {
+@@ -133,6 +134,7 @@ export function createPostCompactionDegradationMonitor(args: {
+         sessionID,
+         cached.providerID,
+         cached.modelID,
++        cached.agent,
+       )
+ 
+       await client.tui
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+index b79dcaac3..9b7a096d2 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+@@ -5,11 +5,12 @@ import {
+ } from "../shared/context-limit-resolver"
+ import { log } from "../shared/logger"
+ 
+-import { resolveCompactionModel } from "./shared/compaction-model-resolver"
++import { resolveCompactionModelDecision } from "./shared/compaction-model-resolver"
+ import { resolveEmptySummaryFromSession } from "./preemptive-compaction-empty-summary"
+ import type {
+   CachedCompactionState,
+   PreemptiveCompactionContext,
++  SummarizeAttempt,
+ } from "./preemptive-compaction-types"
+ 
+ // A summarize of a large context runs long: in a 1M-window session, four consecutive
+@@ -19,6 +20,13 @@ import type {
+ const PREEMPTIVE_COMPACTION_TIMEOUT_MS = 120_000
+ const PREEMPTIVE_COMPACTION_THRESHOLD = 0.78
+ const PREEMPTIVE_COMPACTION_COOLDOWN_MS = 60_000
++// A summarize whose provider stream never settles would otherwise keep the admission
++// guard for the session forever and silently disable preemptive compaction until the
++// plugin restarts. Release a guard that has outlived this ceiling at the next
++// admission attempt, so a hung provider stream can never block the session for good.
++// The normal cooldown still prevents a re-fire storm.
++const PREEMPTIVE_COMPACTION_STALL_RELEASE_MS = 600_000
++let summarizeAttemptCounter = 0
+ 
+ declare function setTimeout(handler: () => void, timeout?: number): unknown
+ declare function clearTimeout(timeoutID: unknown): void
+@@ -50,6 +58,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+   compactionInProgress: Set<string>
+   compactedSessions: Set<string>
+   lastCompactionTime: Map<string, number>
++  summarizeStartedAt: Map<string, SummarizeAttempt>
+ }): Promise<void> {
+   const {
+     ctx,
+@@ -60,8 +69,23 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+     compactionInProgress,
+     compactedSessions,
+     lastCompactionTime,
++    summarizeStartedAt,
+   } = args
+ 
++  const previousAttempt = summarizeStartedAt.get(sessionID)
++  if (
++    previousAttempt &&
++    Date.now() - previousAttempt.startedAt >= PREEMPTIVE_COMPACTION_STALL_RELEASE_MS
++  ) {
++    log("[preemptive-compaction] releasing a stalled summarize guard", {
++      sessionID,
++      pendingMs: Date.now() - previousAttempt.startedAt,
++      releaseAfterMs: PREEMPTIVE_COMPACTION_STALL_RELEASE_MS,
++    })
++    summarizeStartedAt.delete(sessionID)
++    compactionInProgress.delete(sessionID)
++  }
++
+   if (compactedSessions.has(sessionID) || compactionInProgress.has(sessionID)) return
+ 
+   const lastTime = lastCompactionTime.get(sessionID)
+@@ -88,26 +112,51 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+   const usageRatio = totalInputTokens / actualLimit
+   if (usageRatio < PREEMPTIVE_COMPACTION_THRESHOLD || !cached.modelID) return
+ 
++  summarizeAttemptCounter += 1
++  const attempt: SummarizeAttempt = {
++    startedAt: Date.now(),
++    attemptID: summarizeAttemptCounter,
++  }
+   compactionInProgress.add(sessionID)
++  summarizeStartedAt.set(sessionID, attempt)
+   lastCompactionTime.set(sessionID, Date.now())
++  let targetLabel = `${cached.providerID}/${cached.modelID}`
+ 
+   try {
+-    const { providerID: targetProviderID, modelID: targetModelID } = resolveCompactionModel(
++    const decision = resolveCompactionModelDecision(
+       pluginConfig,
+       sessionID,
+       cached.providerID,
+       cached.modelID,
++      cached.agent,
+     )
++    targetLabel = `${decision.providerID}/${decision.modelID}`
++
++    log("[preemptive-compaction] summarize model resolved", {
++      sessionID,
++      source: decision.source,
++      reason: decision.reason,
++      agentName: decision.agentName,
++      agentConfigKey: decision.agentConfigKey,
++      pinnedModel: decision.pinnedModel,
++      target: targetLabel,
++      sessionModel: `${cached.providerID}/${cached.modelID}`,
++      usageRatio: Number(usageRatio.toFixed(4)),
++    })
+ 
+     const summarizePromise = ctx.client.session.summarize({
+       path: { id: sessionID },
+-      body: { providerID: targetProviderID, modelID: targetModelID, auto: true },
++      body: { providerID: decision.providerID, modelID: decision.modelID, auto: true },
+       query: { directory: ctx.directory },
+     })
+-    void summarizePromise.then(
+-      () => compactionInProgress.delete(sessionID),
+-      () => compactionInProgress.delete(sessionID),
+-    )
++
++    const releaseInProgress = () => {
++      // A superseded attempt must not clear the guard a newer attempt owns.
++      if (summarizeStartedAt.get(sessionID)?.attemptID !== attempt.attemptID) return
++      compactionInProgress.delete(sessionID)
++      summarizeStartedAt.delete(sessionID)
++    }
++    void summarizePromise.then(releaseInProgress, releaseInProgress)
+ 
+     await withTimeout(
+       summarizePromise,
+@@ -127,13 +176,13 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+     if (emptySummary) {
+       log("[preemptive-compaction] Compaction produced an empty summary; not marking session compacted", {
+         sessionID,
+-        providerID: targetProviderID,
+-        modelID: targetModelID,
++        providerID: decision.providerID,
++        modelID: decision.modelID,
+       })
+       ctx.client.tui.showToast({
+         body: {
+           title: "Preemptive compaction produced no summary",
+-          message: `Compaction ran on ${targetProviderID}/${targetModelID} but returned an empty summary. The session was not compacted and will retry.`,
++          message: `Compaction ran on ${decision.providerID}/${decision.modelID} but returned an empty summary. The session was not compacted and will retry.`,
+           variant: "warning",
+           duration: 10000,
+         },
+@@ -151,6 +200,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+     const errorMessage = String(error)
+     log("[preemptive-compaction] Compaction failed", {
+       sessionID,
++      target: targetLabel,
+       providerID: cached.providerID,
+       modelID: cached.modelID,
+       error: errorMessage,
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-types.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-types.ts
+index 77efed575..50e74d4b9 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-types.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-types.ts
+@@ -9,6 +9,18 @@ export interface CachedCompactionState {
+   providerID: string
+   modelID: string
+   tokens: TokenInfo
++  /** Agent that produced the cached message; used to resolve the compaction pin. */
++  agent?: string
++}
++
++/**
++ * One in-flight summarize per session. `attemptID` lets a superseded attempt
++ * detect that it no longer owns the session's admission guard, so its late
++ * cleanup cannot clear the guard of a newer attempt.
++ */
++export interface SummarizeAttempt {
++  startedAt: number
++  attemptID: number
+ }
+ 
+ export interface PreemptiveCompactionClient {
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts b/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
+index 342fb2367..409a866df 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
+@@ -289,6 +289,7 @@ describe("preemptive-compaction", () => {
+     //#then
+     expect(logMock).toHaveBeenCalledWith("[preemptive-compaction] Compaction failed", {
+       sessionID,
++      target: "anthropic/claude-sonnet-4-6",
+       providerID: "anthropic",
+       modelID: "claude-sonnet-4-6",
+       error: String(summarizeError),
+@@ -611,6 +612,7 @@ describe("preemptive-compaction", () => {
+       resolvePendingSummarize()
+       expect(logMock).toHaveBeenCalledWith("[preemptive-compaction] Compaction failed", {
+         sessionID,
++        target: "anthropic/claude-sonnet-4-6",
+         providerID: "anthropic",
+         modelID: "claude-sonnet-4-6",
+         error: expect.stringContaining("Compaction summarize timed out"),
+@@ -1045,4 +1047,71 @@ describe("preemptive-compaction", () => {
+       Date.now = originalNow
+     }
+   })
++
++  // #given a summarize that never settles
++  // #when a later tool call happens after the stall release ceiling
++  // #then the guard is released so the session can compact again
++  it("should release a stalled summarize guard after the release ceiling", async () => {
++    const restoreTimeouts = setupImmediateTimeouts()
++    const hook = createPreemptiveCompactionHook(ctx as never, {} as never)
++    const sessionID = "ses_stalled"
++    const pendingSummarize = new Promise<void>(() => undefined)
++
++    ctx.client.session.summarize
++      .mockImplementationOnce(() => pendingSummarize)
++      .mockResolvedValueOnce({})
++
++    try {
++      await hook.event({
++        event: {
++          type: "message.updated",
++          properties: {
++            info: {
++              role: "assistant",
++              sessionID,
++              providerID: "anthropic",
++              modelID: "claude-sonnet-4-6",
++              finish: true,
++              tokens: { input: 800000, output: 0, reasoning: 0, cache: { read: 10000, write: 0 } },
++            },
++          },
++        },
++      })
++
++      await hook["tool.execute.after"](
++        { tool: "bash", sessionID, callID: "call_stall_1" },
++        { title: "", output: "test", metadata: null },
++      )
++
++      // then - the pending summarize owns admission
++      expect(ctx.client.session.summarize).toHaveBeenCalledTimes(1)
++
++      const originalNow = Date.now
++      try {
++        // when - still inside the ceiling, admission stays blocked
++        Date.now = () => originalNow() + 61_000
++        await hook["tool.execute.after"](
++          { tool: "bash", sessionID, callID: "call_stall_2" },
++          { title: "", output: "test", metadata: null },
++        )
++        expect(ctx.client.session.summarize).toHaveBeenCalledTimes(1)
++
++        // when - past the ceiling, the stalled guard is released
++        Date.now = () => originalNow() + 601_000
++        await hook["tool.execute.after"](
++          { tool: "bash", sessionID, callID: "call_stall_3" },
++          { title: "", output: "test", metadata: null },
++        )
++        expect(ctx.client.session.summarize).toHaveBeenCalledTimes(2)
++        expect(logMock).toHaveBeenCalledWith(
++          "[preemptive-compaction] releasing a stalled summarize guard",
++          expect.objectContaining({ sessionID, releaseAfterMs: 600_000 }),
++        )
++      } finally {
++        Date.now = originalNow
++      }
++    } finally {
++      restoreTimeouts()
++    }
++  })
+ })
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction.ts b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+index 48536136e..a56f95600 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+@@ -8,6 +8,7 @@ import { runPreemptiveCompactionIfNeeded } from "./preemptive-compaction-trigger
+ import type {
+   CachedCompactionState,
+   PreemptiveCompactionContext,
++  SummarizeAttempt,
+   TokenInfo,
+ } from "./preemptive-compaction-types"
+ 
+@@ -19,6 +20,7 @@ export function createPreemptiveCompactionHook(
+   const compactionInProgress = new Set<string>()
+   const compactedSessions = new Set<string>()
+   const lastCompactionTime = new Map<string, number>()
++  const summarizeStartedAt = new Map<string, SummarizeAttempt>()
+   const tokenCache = new Map<string, CachedCompactionState>()
+ 
+   const postCompactionMonitor = createPostCompactionDegradationMonitor({
+@@ -42,6 +44,7 @@ export function createPreemptiveCompactionHook(
+       compactionInProgress,
+       compactedSessions,
+       lastCompactionTime,
++      summarizeStartedAt,
+     })
+   }
+ 
+@@ -54,6 +57,7 @@ export function createPreemptiveCompactionHook(
+         compactionInProgress.delete(sessionID)
+         compactedSessions.delete(sessionID)
+         lastCompactionTime.delete(sessionID)
++        summarizeStartedAt.delete(sessionID)
+         tokenCache.delete(sessionID)
+         postCompactionMonitor.clear(sessionID)
+       }
+@@ -96,6 +100,7 @@ export function createPreemptiveCompactionHook(
+           providerID: info.providerID,
+           modelID: info.modelID ?? "",
+           tokens: info.tokens,
++          agent: typeof info.agent === "string" ? info.agent : undefined,
+         })
+       }
+       compactedSessions.delete(sessionID)
+diff --git a/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.test.ts b/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.test.ts
+new file mode 100644
+index 000000000..876d6b80a
+--- /dev/null
++++ b/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.test.ts
+@@ -0,0 +1,160 @@
++/// <reference types="bun-types" />
++
++import { afterEach, describe, expect, it } from "bun:test"
++
++import {
++  clearSessionAgent,
++  updateSessionAgent,
++} from "../../features/claude-code-session-state"
++
++import { resolveCompactionModel, resolveCompactionModelDecision } from "./compaction-model-resolver"
++
++const SESSION_MODEL = { providerID: "opencode-go", modelID: "deepseek-v4.1-flash" } as const
++
++const pluginConfig = {
++  agents: {
++    sisyphus: { compaction: { model: "zai-coding-plan/glm-5.3-flash" } },
++    "sisyphus-junior": { compaction: { model: "zai-coding-plan/glm-5.3-flash" } },
++    prometheus: { compaction: { model: "openai/gpt-5.6-luna" } },
++    oracle: { model: "openai/gpt-5.6-luna" },
++    "weird pin": { compaction: { model: "glm-5.3-flash" } },
++    acme: { compaction: { model: "zai-coding-plan/glm-5.3-flash" } },
++  },
++} as never
++
++function resolve(sessionID: string, fallbackAgentName?: string) {
++  return resolveCompactionModel(
++    pluginConfig,
++    sessionID,
++    SESSION_MODEL.providerID,
++    SESSION_MODEL.modelID,
++    fallbackAgentName,
++  )
++}
++
++describe("compaction model resolver", () => {
++  afterEach(() => {
++    clearSessionAgent("ses_pin")
++    clearSessionAgent("ses_display")
++    clearSessionAgent("ses_persona")
++    clearSessionAgent("ses_unpinned")
++    clearSessionAgent("ses_malformed")
++    clearSessionAgent("ses_no_config")
++    clearSessionAgent("ses_custom")
++  })
++
++  it("uses the pinned summarizer for the configured agent key", () => {
++    updateSessionAgent("ses_pin", "sisyphus")
++
++    expect(resolve("ses_pin")).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++  })
++
++  it("uses the pinned summarizer when the session carries the display name", () => {
++    updateSessionAgent("ses_display", "Sisyphus - ultraworker")
++
++    expect(resolve("ses_display")).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++  })
++
++  it("resolves a persona-suffixed variant of a canonical agent to that agent's pin", () => {
++    updateSessionAgent("ses_persona", "Sisyphus - review bot")
++
++    expect(resolve("ses_persona")).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++  })
++
++  it("does not lend the base agent's pin to an unrelated custom agent", () => {
++    updateSessionAgent("ses_custom", "acme - review bot")
++
++    const decision = resolveCompactionModelDecision(
++      pluginConfig,
++      "ses_custom",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++    )
++
++    expect(decision.source).toBe("session")
++    expect(decision.reason).toBe("agent-not-configured")
++    expect(resolve("ses_custom")).toEqual(SESSION_MODEL)
++  })
++
++  it("uses the observed agent when the session agent map is empty", () => {
++    expect(resolve("ses_missing_map", "sisyphus-junior")).toEqual({
++      providerID: "zai-coding-plan",
++      modelID: "glm-5.3-flash",
++    })
++  })
++
++  it("falls back to the session model when the agent has no pin", () => {
++    updateSessionAgent("ses_unpinned", "oracle")
++
++    const decision = resolveCompactionModelDecision(
++      pluginConfig,
++      "ses_unpinned",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++    )
++
++    expect(decision.source).toBe("session")
++    expect(decision.reason).toBe("no-compaction-pin")
++    expect(resolve("ses_unpinned")).toEqual(SESSION_MODEL)
++  })
++
++  it("reports no-agent-name when nothing identifies the session agent", () => {
++    const decision = resolveCompactionModelDecision(
++      pluginConfig,
++      "ses_unknown_agent",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++    )
++
++    expect(decision.source).toBe("session")
++    expect(decision.reason).toBe("no-agent-name")
++  })
++
++  it("rejects a pin without a provider prefix", () => {
++    updateSessionAgent("ses_malformed", "weird pin")
++
++    const decision = resolveCompactionModelDecision(
++      pluginConfig,
++      "ses_malformed",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++    )
++
++    expect(decision.source).toBe("session")
++    expect(decision.reason).toBe("malformed-pin")
++  })
++
++  it("reports no-agents-config when the plugin config has no overrides", () => {
++    updateSessionAgent("ses_no_config", "sisyphus")
++
++    const decision = resolveCompactionModelDecision(
++      {} as never,
++      "ses_no_config",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++    )
++
++    expect(decision.source).toBe("session")
++    expect(decision.reason).toBe("no-agents-config")
++  })
++
++  it("keeps the provider and joins multi-segment model ids", () => {
++    const decision = resolveCompactionModelDecision(
++      { agents: { sisyphus: { compaction: { model: "opencode-go/deepseek/v4" } } } } as never,
++      "ses_multiseg",
++      SESSION_MODEL.providerID,
++      SESSION_MODEL.modelID,
++      "sisyphus",
++    )
++
++    expect(decision).toEqual({
++      providerID: "opencode-go",
++      modelID: "deepseek/v4",
++      source: "pin",
++      reason: "pin:sisyphus",
++      agentName: "sisyphus",
++      agentConfigKey: "sisyphus",
++      pinnedModel: "opencode-go/deepseek/v4",
++    })
++  })
++})
+diff --git a/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.ts b/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.ts
+index 6993c7987..19c78e2ea 100644
+--- a/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.ts
++++ b/packages/omo-opencode/src/hooks/shared/compaction-model-resolver.ts
+@@ -1,34 +1,122 @@
+ import type { OhMyOpenCodeConfig } from "../../config"
+ import { getSessionAgent } from "../../features/claude-code-session-state"
+-import { getAgentConfigKey } from "../../shared/agent-display-names"
++import { AGENT_DISPLAY_NAMES, getAgentConfigKey } from "../../shared/agent-display-names"
+ 
+-export function resolveCompactionModel(
++type AgentCompactionConfig = { compaction?: { model?: string } }
++type AgentOverrides = Record<string, AgentCompactionConfig | undefined>
++
++export type CompactionModelDecision = {
++  providerID: string
++  modelID: string
++  source: "pin" | "session"
++  reason: string
++  agentName: string | null
++  agentConfigKey: string | null
++  pinnedModel: string | null
++}
++
++/**
++ * Resolve an agent override entry from its config key.
++ *
++ * `getAgentConfigKey` normalizes display names ("Sisyphus - ultraworker") to config
++ * keys ("sisyphus"), but sessions can carry a canonical agent's persona-suffixed
++ * variant that is absent from the display-name table. Those must still reach their
++ * agent's pin instead of silently falling back to the session model.
++ *
++ * The suffix fallback is deliberately restricted to canonical agent keys
++ * (`AGENT_DISPLAY_NAMES`): an unrelated custom agent must not borrow a pinned
++ * agent's summarizer model.
++ */
++function findAgentConfig(
++  agents: AgentOverrides,
++  agentConfigKey: string,
++): { key: string; config: AgentCompactionConfig } | undefined {
++  const direct = agents[agentConfigKey]
++  if (direct) return { key: agentConfigKey, config: direct }
++
++  const lowerKey = agentConfigKey.toLowerCase()
++  for (const [key, value] of Object.entries(agents)) {
++    if (value && key.toLowerCase() === lowerKey) return { key, config: value }
++  }
++
++  const base = lowerKey.split(" - ")[0]?.trim()
++  if (base && base !== lowerKey && AGENT_DISPLAY_NAMES[base] !== undefined) {
++    for (const [key, value] of Object.entries(agents)) {
++      if (value && key.toLowerCase() === base) return { key, config: value }
++    }
++  }
++
++  return undefined
++}
++
++/**
++ * Resolve the model used to summarize a session, and report *why*.
++ *
++ * The previous implementation returned the session model on every failure path
++ * without logging anything, so a dead pin was indistinguishable from a working
++ * one until the summary showed up on the wrong provider. Keep the decision
++ * explicit so the caller can log it.
++ */
++export function resolveCompactionModelDecision(
+   pluginConfig: OhMyOpenCodeConfig,
+   sessionID: string,
+   originalProviderID: string,
+-  originalModelID: string
+-): { providerID: string; modelID: string } {
+-  const sessionAgentName = getSessionAgent(sessionID)
+-  
+-  if (!sessionAgentName || !pluginConfig.agents) {
+-    return { providerID: originalProviderID, modelID: originalModelID }
+-  }
++  originalModelID: string,
++  fallbackAgentName?: string,
++): CompactionModelDecision {
++  const sessionAgentName = getSessionAgent(sessionID) ?? fallbackAgentName ?? null
++  const sessionFallback = (
++    reason: string,
++    agentConfigKey?: string | null,
++    pinnedModel?: string | null,
++  ): CompactionModelDecision => ({
++    providerID: originalProviderID,
++    modelID: originalModelID,
++    source: "session",
++    reason,
++    agentName: sessionAgentName,
++    agentConfigKey: agentConfigKey ?? null,
++    pinnedModel: pinnedModel ?? null,
++  })
++
++  if (!sessionAgentName) return sessionFallback("no-agent-name")
++  if (!pluginConfig.agents) return sessionFallback("no-agents-config")
+ 
+   const agentConfigKey = getAgentConfigKey(sessionAgentName)
+-  const agentConfig = (pluginConfig.agents as Record<string, { compaction?: { model?: string } } | undefined>)[agentConfigKey]
+-  const compactionConfig = agentConfig?.compaction
++  const match = findAgentConfig(pluginConfig.agents as AgentOverrides, agentConfigKey)
++  if (!match) return sessionFallback("agent-not-configured", agentConfigKey)
+ 
+-  if (!compactionConfig?.model) {
+-    return { providerID: originalProviderID, modelID: originalModelID }
+-  }
++  const pinnedModel = match.config.compaction?.model
++  if (!pinnedModel) return sessionFallback("no-compaction-pin", agentConfigKey)
+ 
+-  const modelParts = compactionConfig.model.split("/")
+-  if (modelParts.length < 2) {
+-    return { providerID: originalProviderID, modelID: originalModelID }
+-  }
++  const modelParts = pinnedModel.split("/")
++  if (modelParts.length < 2) return sessionFallback("malformed-pin", agentConfigKey, pinnedModel)
+ 
+   return {
+     providerID: modelParts[0],
+     modelID: modelParts.slice(1).join("/"),
++    source: "pin",
++    reason: `pin:${match.key}`,
++    agentName: sessionAgentName,
++    agentConfigKey,
++    pinnedModel,
+   }
+ }
++
++export function resolveCompactionModel(
++  pluginConfig: OhMyOpenCodeConfig,
++  sessionID: string,
++  originalProviderID: string,
++  originalModelID: string,
++  fallbackAgentName?: string
++): { providerID: string; modelID: string } {
++  const decision = resolveCompactionModelDecision(
++    pluginConfig,
++    sessionID,
++    originalProviderID,
++    originalModelID,
++    fallbackAgentName
++  )
++
++  return { providerID: decision.providerID, modelID: decision.modelID }
++}
+-- 
+2.55.0.windows.3
+

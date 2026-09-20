@@ -1,0 +1,335 @@
+﻿From 64987f992afd70bdcf6e78c16c04192b35e6aec1 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Sat, 19 Sep 2026 01:18:30 +0300
+Subject: [PATCH] fix(preemptive-compaction): keep the guard after a timed-out
+ summarize, reject empty summaries
+
+Four consecutive compactions in one 1M-window session failed with "Compaction
+summarize timed out after 60000ms". Each request actually completed 64-67s in,
+seconds after the plugin had already abandoned it, and one of them left a
+summary message with no parts and no output tokens.
+
+Because an abandoned attempt never latches the session, the next tool call
+after the cooldown recomputed the ratio from the pre-compaction measurement and
+started another compaction - one fired at a real fill of 71,333 tokens (7.1% of
+the window) because the cache still held 824,748 from before the previous one.
+
+- drop the cached measurement on session.compacted: it is the pre-compaction
+  prompt, above threshold by definition, and must not justify another compaction
+- verify the summary message carries text; an empty summary is logged, surfaced
+  as a warning toast, and not latched, so a retry stays possible
+- give the summarize call the same 120s budget the degradation monitor uses
+
+Tests: three cases that fail without the fix (see
+.omo/evidence/preemptive-compaction-refire-and-empty-summary/qa-report.md).
+---
+ .../preemptive-compaction-empty-summary.ts    |  73 ++++++++++
+ .../hooks/preemptive-compaction-trigger.ts    |  38 +++++-
+ .../src/hooks/preemptive-compaction.test.ts   | 128 +++++++++++++++++-
+ .../src/hooks/preemptive-compaction.ts        |   5 +
+ 4 files changed, 242 insertions(+), 2 deletions(-)
+ create mode 100644 packages/omo-opencode/src/hooks/preemptive-compaction-empty-summary.ts
+
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-empty-summary.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-empty-summary.ts
+new file mode 100644
+index 000000000..019f5abfa
+--- /dev/null
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-empty-summary.ts
+@@ -0,0 +1,73 @@
++import { normalizeSDKResponse } from "../shared/normalize-sdk-response"
++
++interface MessagePart {
++  type?: unknown
++  text?: unknown
++}
++
++interface SessionMessage {
++  info?: {
++    id?: string
++    role?: string
++    summary?: unknown
++    tokens?: { output?: number }
++  }
++  parts?: MessagePart[]
++}
++
++/**
++ * A compaction is "empty" when it wrote a summary message that carries no text at all
++ * (observed: a summarize whose provider stream died mid-flight produced `summary: true`
++ * with zero parts and zero output tokens). Such a summary replaces the conversation with
++ * nothing, so it must never be treated as a successful compaction.
++ */
++export function isEmptySummaryMessage(message: SessionMessage | undefined): boolean {
++  if (!message) return false
++
++  const parts = message.parts
++  const hasText = Array.isArray(parts) && parts.some((part) => {
++    if (part?.type !== "text") return false
++    return typeof part.text === "string" && part.text.trim().length > 0
++  })
++  if (hasText) return false
++
++  const isSummary = message.info?.summary === true
++  const hasNoParts = Array.isArray(parts) && parts.length === 0
++  if (!isSummary && !hasNoParts) return false
++
++  return (message.info?.tokens?.output ?? 0) === 0
++}
++
++export async function resolveEmptySummaryFromSession(args: {
++  client: {
++    session: {
++      messages: (input: {
++        path: { id: string }
++        query?: { directory: string }
++      }) => Promise<unknown>
++    }
++  }
++  sessionID: string
++  directory: string
++}): Promise<boolean> {
++  const { client, sessionID, directory } = args
++
++  try {
++    const response = await client.session.messages({
++      path: { id: sessionID },
++      query: { directory },
++    })
++
++    const messages = normalizeSDKResponse(response, [] as SessionMessage[], {
++      preferResponseOnMissingData: true,
++    })
++    if (!Array.isArray(messages) || messages.length === 0) return false
++
++    const target = messages[messages.length - 1]
++    if (target?.info?.role !== "assistant") return false
++
++    return isEmptySummaryMessage(target)
++  } catch {
++    return false
++  }
++}
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+index 75764ab6f..b79dcaac3 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+@@ -6,12 +6,17 @@ import {
+ import { log } from "../shared/logger"
+ 
+ import { resolveCompactionModel } from "./shared/compaction-model-resolver"
++import { resolveEmptySummaryFromSession } from "./preemptive-compaction-empty-summary"
+ import type {
+   CachedCompactionState,
+   PreemptiveCompactionContext,
+ } from "./preemptive-compaction-types"
+ 
+-const PREEMPTIVE_COMPACTION_TIMEOUT_MS = 60_000
++// A summarize of a large context runs long: in a 1M-window session, four consecutive
++// attempts at ~650K tokens completed 64-67s in — just past the previous 60s budget — so
++// every one was abandoned mid-flight, which produced empty summaries and repeated
++// re-fires. The degradation monitor already budgets 120s for the same call.
++const PREEMPTIVE_COMPACTION_TIMEOUT_MS = 120_000
+ const PREEMPTIVE_COMPACTION_THRESHOLD = 0.78
+ const PREEMPTIVE_COMPACTION_COOLDOWN_MS = 60_000
+ 
+@@ -110,6 +115,37 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+       `Compaction summarize timed out after ${PREEMPTIVE_COMPACTION_TIMEOUT_MS}ms`,
+     )
+ 
++    // A summarize whose provider stream died mid-flight still resolves, leaving an
++    // empty summary message that replaces the conversation with nothing. Never latch
++    // the session as compacted in that case: report it and allow a retry after cooldown.
++    const emptySummary = await resolveEmptySummaryFromSession({
++      client: ctx.client,
++      sessionID,
++      directory: ctx.directory,
++    })
++
++    if (emptySummary) {
++      log("[preemptive-compaction] Compaction produced an empty summary; not marking session compacted", {
++        sessionID,
++        providerID: targetProviderID,
++        modelID: targetModelID,
++      })
++      ctx.client.tui.showToast({
++        body: {
++          title: "Preemptive compaction produced no summary",
++          message: `Compaction ran on ${targetProviderID}/${targetModelID} but returned an empty summary. The session was not compacted and will retry.`,
++          variant: "warning",
++          duration: 10000,
++        },
++      }).catch((toastError: unknown) => {
++        log("[preemptive-compaction] Failed to show toast", {
++          sessionID,
++          toastError: String(toastError),
++        })
++      })
++      return
++    }
++
+     compactedSessions.add(sessionID)
+   } catch (error) {
+     const errorMessage = String(error)
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts b/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
+index 6a170d24a..342fb2367 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction.test.ts
+@@ -170,7 +170,10 @@ describe("preemptive-compaction", () => {
+       output
+     )
+ 
+-    expect(ctx.client.session.messages).not.toHaveBeenCalled()
++    // the token source stays the cache; the single messages() call is the
++    // post-compaction summary verification, not a token re-fetch
++    expect(ctx.client.session.messages).toHaveBeenCalledTimes(1)
++    expect(ctx.client.session.summarize).toHaveBeenCalled()
+     expect(ctx.client.session.summarize).toHaveBeenCalled()
+   })
+ 
+@@ -919,4 +922,127 @@ describe("preemptive-compaction", () => {
+ 
+     expect(ctx.client.session.summarize).toHaveBeenCalled()
+   })
++
++  // #given a summarize that outlived the plugin's timeout (observed live: 64-67s against a 60s budget)
++  // #when the abandoned summarize then finishes and replaces the prompt
++  // #then the pre-compaction measurement must not justify another compaction
++  it("should not re-fire from the pre-compaction measurement after a timed-out summarize completes", async () => {
++    const restoreTimeouts = setupImmediateTimeouts()
++    const hook = createPreemptiveCompactionHook(ctx as never, {} as never)
++    const sessionID = "ses_timeout_then_compacted"
++    let resolvePendingSummarize: () => void = () => undefined
++    const pendingSummarize = new Promise<void>((resolve) => {
++      resolvePendingSummarize = resolve
++    })
++    ctx.client.session.summarize.mockImplementationOnce(() => pendingSummarize)
++
++    try {
++      await hook.event({
++        event: {
++          type: "message.updated",
++          properties: {
++            info: {
++              role: "assistant",
++              sessionID,
++              providerID: "anthropic",
++              modelID: "claude-sonnet-4-6",
++              finish: true,
++              tokens: { input: 800000, output: 0, reasoning: 0, cache: { read: 10000, write: 0 } },
++            },
++          },
++        },
++      })
++
++      await hook["tool.execute.after"](
++        { tool: "bash", sessionID, callID: "call_1" },
++        { title: "", output: "test", metadata: null },
++      )
++      expect(ctx.client.session.summarize).toHaveBeenCalledTimes(1)
++
++      // when - the abandoned summarize finishes anyway and replaces the prompt
++      await hook.event({ event: { type: "session.compacted", properties: { sessionID } } })
++      resolvePendingSummarize()
++      await Promise.resolve()
++      await Promise.resolve()
++
++      const originalNow = Date.now
++      Date.now = () => originalNow() + 61_000
++      try {
++        await hook["tool.execute.after"](
++          { tool: "bash", sessionID, callID: "call_2" },
++          { title: "", output: "test", metadata: null },
++        )
++
++        // then - the stale pre-compaction measurement is gone, so nothing re-fires
++        expect(ctx.client.session.summarize).toHaveBeenCalledTimes(1)
++      } finally {
++        Date.now = originalNow
++      }
++    } finally {
++      resolvePendingSummarize()
++      restoreTimeouts()
++    }
++  })
++
++  // #given the compaction model returns a summary message with no text and no output tokens
++  // #when the summarize resolves
++  // #then the session must not be latched as compacted and a retry must stay possible
++  it("should reject an empty compaction summary and allow a retry after cooldown", async () => {
++    ctx.client.session.messages = mock(() =>
++      Promise.resolve({
++        data: [
++          {
++            info: { id: "msg_summary", role: "assistant", summary: true, tokens: { output: 0 } },
++            parts: [],
++          },
++        ],
++      }),
++    )
++
++    const hook = createPreemptiveCompactionHook(ctx as never, {} as never)
++    const sessionID = "ses_empty_summary"
++
++    await hook.event({
++      event: {
++        type: "message.updated",
++        properties: {
++          info: {
++            role: "assistant",
++            sessionID,
++            providerID: "anthropic",
++            modelID: "claude-sonnet-4-6",
++            finish: true,
++            tokens: { input: 800000, output: 0, reasoning: 0, cache: { read: 10000, write: 0 } },
++          },
++        },
++      },
++    })
++
++    await hook["tool.execute.after"](
++      { tool: "bash", sessionID, callID: "call_1" },
++      { title: "", output: "test", metadata: null },
++    )
++
++    // then - the empty summary is surfaced instead of being treated as success
++    expect(ctx.client.session.summarize).toHaveBeenCalledTimes(1)
++    const toastTitles = ctx.client.tui.showToast.mock.calls.map((call: unknown[]) =>
++      (call[0] as { body?: { title?: string } } | undefined)?.body?.title,
++    )
++    expect(toastTitles).toContain("Preemptive compaction produced no summary")
++
++    // and - because the session was not latched, a retry is allowed after the cooldown
++    const originalNow = Date.now
++    try {
++      Date.now = () => originalNow() + 61_000
++
++      await hook["tool.execute.after"](
++        { tool: "bash", sessionID, callID: "call_2" },
++        { title: "", output: "test", metadata: null },
++      )
++
++      expect(ctx.client.session.summarize).toHaveBeenCalledTimes(2)
++    } finally {
++      Date.now = originalNow
++    }
++  })
+ })
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction.ts b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+index 88792ffe5..48536136e 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+@@ -63,6 +63,11 @@ export function createPreemptiveCompactionHook(
+     if (event.type === "session.compacted") {
+       const sessionID = resolveSessionEventID(props)
+       if (sessionID) {
++        // The cached measurement is the pre-compaction prompt, which is above the
++        // threshold by definition. Reusing it after the prompt has been replaced would
++        // immediately justify another compaction (observed firing at 7% real usage).
++        // Drop it; the next finished non-compaction assistant message re-populates it.
++        tokenCache.delete(sessionID)
+         postCompactionMonitor.onSessionCompacted(sessionID)
+       }
+       return
+-- 
+2.55.0.windows.3
+

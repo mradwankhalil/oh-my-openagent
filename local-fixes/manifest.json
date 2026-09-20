@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "purpose": "Every local OMO fix we own, in dependency order. Applied automatically by local-fixes/apply.mjs after an OMO update so a rebuilt dist always contains all of them.",
+  "repo": "oh-my-openagent-fix",
+  "appliesTo": "packages/omo-opencode",
+  "build": {
+    "command": "bun run build",
+    "artifact": "dist/index.js"
+  },
+  "fixes": [
+    {
+      "id": "01-hijack-autocontinue-reroute",
+      "title": "Post-compaction auto-continue no longer inherits the compaction model",
+      "commit": "65d39d20d",
+      "patch": "patches/01-hijack-autocontinue-reroute.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8397",
+      "why": "OpenCode's synthetic post-compaction continue inherited the summarize request's model, so an agent whose compaction.model differs from the running model made the compaction model continue the task.",
+      "markers": ["compaction-autocontinue-reroute", "pickActiveSessionMessage"],
+      "overlapsWith": ["02-hijack-working-model"],
+      "orderNote": "Adds plugin/compaction-autocontinue-reroute.ts. 02 refines the same file, so 02 must come after 01."
+    },
+    {
+      "id": "02-hijack-working-model",
+      "title": "Resolve the continue's working model from the last real assistant turn",
+      "commit": "7cb33a77c",
+      "patch": "patches/02-hijack-working-model.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8397",
+      "why": "The first fix resolved 'working model' from the newest message carrying agent+model fields, which matched compaction summaries and the internal compaction_continue prompts themselves — a self-sustaining loop that silently switched live sessions to the summarizer model.",
+      "markers": ["isInternalContinuationMessage", "pickActiveSessionMessage"],
+      "overlapsWith": ["01-hijack-autocontinue-reroute"],
+      "orderNote": "Modifies the file added by 01. Keep after 01."
+    },
+    {
+      "id": "03-empty-summary-guard",
+      "title": "Keep the admission guard after a timed-out summarize; reject empty summaries",
+      "commit": "64987f992",
+      "patch": "patches/03-empty-summary-guard.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8473",
+      "why": "An abandoned summarize never latched the session, so the next tool call after the cooldown recomputed the ratio from the stale pre-compaction measurement and started another compaction; one fired at a real fill of 7 percent.",
+      "markers": ["Compaction produced an empty summary"],
+      "overlapsWith": ["04-compaction-pin-resolution"],
+      "orderNote": "Touches preemptive-compaction-trigger.ts, which 04 also rewrites. Keep 03 before 04."
+    },
+    {
+      "id": "04-compaction-pin-resolution",
+      "title": "Make the summarizer pin resolve, log why, and never deadlock",
+      "commit": "06aef99f5",
+      "patch": "patches/04-compaction-pin-resolution.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8511",
+      "why": "agents.<key>.compaction.model silently fell back to the session model on every failure path with no logging, and the failure log printed the SESSION model — a dead pin looked exactly like a working one. Four production compactions ran on the session model while the config pinned GLM.",
+      "markers": ["summarize model resolved", "releasing a stalled summarize guard", "no-compaction-pin"],
+      "overlapsWith": ["03-empty-summary-guard"],
+      "orderNote": "This is the local-lineage form, which builds on 03's empty-summary module. PR #8511 ships an equivalent port written against dev (commit eb15543ea) that does not depend on 03 — if 03 ever merges upstream, prefer that one instead. Keep after 03.",
+      "portCommit": "eb15543ea"
+    },
+    {
+      "id": "05-background-agent-liveness",
+      "title": "Stop stranding background tasks when activity reads fail",
+      "commit": "af6461926",
+      "patch": "patches/05-background-agent-liveness.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8512",
+      "why": "session-activity.ts detached an SDK method (const sessionGet = client.session.get), so this._client was undefined and every read degraded to unavailable — which suppresses stale interruption — with no completion watchdog. Two review tasks stranded for six hours.",
+      "markers": ["Task exceeded the hard deadline"],
+      "overlapsWith": [],
+      "orderNote": "Independent of 01-04. Safe anywhere in the order."
+    }
+  ],
+  "externalFixes": [
+    {
+      "id": "squeez-wsl-timeout-supervisor",
+      "title": "squeez wrap must not leave a tool call pending on timeout",
+      "path": "C:\\Users\\Zephyrus\\.config\\opencode\\plugins\\squeez.js",
+      "why": "squeez prints its timeout notice but never returns control for wsl.exe commands (one call held a tool for 21,893s). The plugin now injects a supervisor for WSL commands only: bounded wait, taskkill /F /T /PID, exit 124.",
+      "markers": ["WaitForExit", "taskkill /F /T /PID"],
+      "verifyWith": "node C:\\Users\\Zephyrus\\.config\\opencode\\tests\\squeez-plugin.test.mjs",
+      "note": "Not part of the OMO repo; unaffected by an OMO update."
+    }
+  ]
+}

@@ -127,6 +127,7 @@
     "build:omo-schema": "bun run script/build-omo-schema.ts",
     "build:model-capabilities": "bun run script/build-model-capabilities.ts",
     "clean": "rm -rf dist",
+    "fixes:apply": "bun run local-fixes/apply.mjs",
     "prepack": "bun run build:materialize-frontend",
     "prepare": "bun run build",
     "postinstall": "node postinstall.mjs",

@@ -1,0 +1,171 @@
+﻿From af6461926fd16e023bf6300f93591f7e9a4feccf Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Sun, 20 Sep 2026 07:03:20 +0300
+Subject: [PATCH] fix(background-agent): stop stranding tasks when activity
+ reads fail
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A background subagent subsystem silently stranded tasks for ~6 hours. The parent logged,
+repeatedly:
+
+    [background-agent] Failed to read session activity:
+      {"sessionID":"ses_...","error":"undefined is not an object (evaluating 'this._client')"}
+
+and never detected completion, so background tasks appeared to run forever.
+
+Root cause: `session-activity.ts` detached an SDK method from its receiver —
+
+    const sessionGet = client.session.get      // receiver lost
+    const response = await sessionGet({ ... }) // this === undefined inside the SDK
+
+The SDK's client methods read `this._client`, so the detached call threw, was caught, and
+was downgraded to `{ type: "unavailable" }`. The codebase already knows this rule — see
+`build-team-idle-wake-hint-client.ts`, which binds `promptAsync`/`status`/`messages` — this
+call site simply forgot.
+
+Fixes:
+
+1. Bind the SDK method (`sessionGet.bind(session)`) and document why. Also bind the
+   ralph-loop completion toast (`ctx.client.tui.showToast`), which was detached the same
+   way and failed silently.
+2. Absolute liveness backstop (`manager.ts`): activity reads can fail (`unavailable`
+   suppresses stale interruption) and the poll loop can be wedged by an awaited SDK call.
+   In both cases a running attempt is never reported terminal. One timer is now armed per
+   running attempt — on register and on resume — and on expiry it re-checks status and the
+   attempt token, then funnels into the existing `failCrashedTask`, which already marks the
+   task errored, releases its concurrency slot, schedules removal and notifies the parent.
+   Guarding on the attempt token means a stale timer can never fail a resumed attempt. The
+   timer is cleared in `failCrashedTask` alongside the existing completion/idle timers.
+
+Verification: `tsgo --noEmit` exit 0; 772 tests across 64 background-agent test files pass;
+full `bun run build` exit 0.
+---
+ .../src/features/background-agent/manager.ts  | 39 +++++++++++++++++++
+ .../background-agent/session-activity.ts      | 12 ++++--
+ .../pending-verification-handler.ts           |  5 ++-
+ 3 files changed, 52 insertions(+), 4 deletions(-)
+
+diff --git a/packages/omo-opencode/src/features/background-agent/manager.ts b/packages/omo-opencode/src/features/background-agent/manager.ts
+index 5d2e3c69c..5de1016d9 100644
+--- a/packages/omo-opencode/src/features/background-agent/manager.ts
++++ b/packages/omo-opencode/src/features/background-agent/manager.ts
+@@ -271,6 +271,9 @@ export class BackgroundManager {
+   private completedTaskArchive: Map<string, BackgroundTask> = new Map()
+   private completedTaskSummaries: Map<string, BackgroundTaskNotificationTask[]> = new Map()
+   private idleDeferralTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
++  /** Absolute liveness backstop for a running attempt (see armTaskDeadline). */
++  private readonly taskHardDeadlineMs = 60 * 60 * 1000
++  private taskDeadlineTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
+   private notificationQueueByParent: Map<string, Promise<void>> = new Map()
+   private readonly parentWakeNotifier: ParentWakeNotifier
+   private parentWakeTextDeltaBuffers: Map<string, string> = new Map()
+@@ -1309,6 +1312,7 @@ The fallback retry session is now created and can be inspected directly.
+     }
+ 
+     this.addTask(task)
++    this.armTaskDeadline(task)
+     subagentSessions.add(input.sessionId)
+     this.startPolling()
+     this.taskHistory.record(input.parentSessionId, { id: task.id, sessionID: input.sessionId, agent: input.agent || "task", description: input.description, status: "running", startedAt: task.startedAt })
+@@ -1370,6 +1374,7 @@ The fallback retry session is now created and can be inspected directly.
+     // Reset startedAt on resume to prevent immediate completion
+     // The MIN_IDLE_TIME_MS check uses startedAt, so resumed tasks need fresh timing
+     existingTask.startedAt = new Date()
++    this.armTaskDeadline(existingTask)
+ 
+     existingTask.progress = {
+       toolCalls: existingTask.progress?.toolCalls ?? 0,
+@@ -2970,6 +2975,35 @@ The task was re-queued on a fallback model after a retryable failure.
+     return verifySessionStillExists(this.client, sessionID, this.directory)
+   }
+ 
++  /**
++   * Absolute liveness backstop. Activity reads can fail (`session-activity` returns
++   * `unavailable` on an SDK/receiver error, which suppresses stale interruption) and the
++   * poll loop can be wedged by an awaited SDK call; in both cases a running attempt is
++   * never reported terminal and the task strands indefinitely. Arm one timer per running
++   * attempt; the callback re-checks status and the attempt token, so a stale timer can
++   * never fail a resumed attempt.
++   */
++  private armTaskDeadline(task: BackgroundTask): void {
++    const existing = this.taskDeadlineTimers.get(task.id)
++    if (existing) clearTimeout(existing)
++    const attemptID = task.currentAttemptID
++    const timer = setTimeout(() => {
++      this.taskDeadlineTimers.delete(task.id)
++      if (task.status !== "running") return
++      if (task.currentAttemptID !== attemptID) return
++      log("[background-agent] Task exceeded the hard deadline; reporting it as failed", {
++        taskId: task.id,
++        sessionID: task.sessionId,
++        deadlineMs: this.taskHardDeadlineMs,
++      })
++      void this.failCrashedTask(
++        task,
++        `Task exceeded the hard deadline of ${Math.round(this.taskHardDeadlineMs / 60000)} minutes without reaching a terminal state.`,
++      )
++    }, this.taskHardDeadlineMs)
++    this.taskDeadlineTimers.set(task.id, timer)
++  }
++
+   private async failCrashedTask(task: BackgroundTask, errorMessage: string): Promise<void> {
+     if (task.currentAttemptID) {
+       finalizeAttempt(task, task.currentAttemptID, "error", errorMessage)
+@@ -2997,6 +3031,11 @@ The task was re-queued on a fallback model after a retryable failure.
+       clearTimeout(idleTimer)
+       this.idleDeferralTimers.delete(task.id)
+     }
++    const deadlineTimer = this.taskDeadlineTimers.get(task.id)
++    if (deadlineTimer) {
++      clearTimeout(deadlineTimer)
++      this.taskDeadlineTimers.delete(task.id)
++    }
+ 
+     this.cleanupPendingByParent(task)
+     this.clearNotificationsForTask(task.id)
+diff --git a/packages/omo-opencode/src/features/background-agent/session-activity.ts b/packages/omo-opencode/src/features/background-agent/session-activity.ts
+index e270d3bbf..bd72172d0 100644
+--- a/packages/omo-opencode/src/features/background-agent/session-activity.ts
++++ b/packages/omo-opencode/src/features/background-agent/session-activity.ts
+@@ -31,11 +31,17 @@ export async function getSessionActivityFromClient(
+   sessionID: string,
+   directory?: string,
+ ): Promise<SessionActivityLookup> {
+-  const sessionGet = client.session.get
+-  if (typeof sessionGet !== "function") return { type: "missing" }
++  const session = client.session
++  const sessionGet = session?.get
++  if (!session || typeof sessionGet !== "function") return { type: "missing" }
++  // The SDK client methods read `this._client`, so they must be invoked with their
++  // receiver. Detaching the method (const sessionGet = client.session.get) throws
++  // "undefined is not an object (evaluating 'this._client')" and silently downgrades
++  // every activity read to `unavailable`, which strands background tasks.
++  const readSession = sessionGet.bind(session)
+ 
+   try {
+-    const response = await sessionGet({
++    const response = await readSession({
+       path: { id: sessionID },
+       ...(directory ? { query: { directory } } : {}),
+     })
+diff --git a/packages/omo-opencode/src/hooks/ralph-loop/pending-verification-handler.ts b/packages/omo-opencode/src/hooks/ralph-loop/pending-verification-handler.ts
+index f46373727..a967d968d 100644
+--- a/packages/omo-opencode/src/hooks/ralph-loop/pending-verification-handler.ts
++++ b/packages/omo-opencode/src/hooks/ralph-loop/pending-verification-handler.ts
+@@ -91,7 +91,10 @@ type LoopStateController = {
+ }
+ 
+ function showCompletionToastBestEffort(ctx: PluginInput, state: RalphLoopState): void {
+-	const showToast = ctx.client.tui?.showToast
++  const tui = ctx.client.tui
++  // SDK methods read `this._client`, so they must be invoked with their receiver.
++  // Bind it here; a detached call throws and the toast is silently lost.
++  const showToast = tui ? tui.showToast?.bind(tui) : undefined
+ 	if (!showToast) {
+ 		return
+ 	}
+-- 
+2.55.0.windows.3
+

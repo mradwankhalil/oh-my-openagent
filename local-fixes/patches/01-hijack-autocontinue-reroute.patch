@@ -1,0 +1,389 @@
+﻿From 65d39d20d8f77ecaafbe93b3b170c614302bfcfe Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Wed, 16 Sep 2026 21:03:02 +0300
+Subject: [PATCH] fix(compaction): reroute autocontinue to the session working
+ model
+
+OpenCode's synthetic post-compaction continue inherits the summarize request's
+model (session/compaction.ts stamps model: userMessage.model). When an agent's
+compaction.model differs from the model the session is actually running, the
+compaction model ended up continuing the task.
+
+The experimental.compaction.autocontinue handler now compares the compaction
+trigger message's model with the nearest non-compaction message's model. On a
+mismatch it disables OpenCode's synthetic continue and re-issues the continue
+prompt via session.promptAsync with the session's working model, agent, and the
+compaction_continue metadata marker. Lookup failures and equal models keep the
+previous behavior.
+
+Adds plugin/compaction-autocontinue-reroute.ts and three regression tests.
+---
+ .../omo-opencode/src/index.compacting.test.ts | 127 +++++++++++++++
+ .../plugin/compaction-autocontinue-reroute.ts | 150 ++++++++++++++++++
+ .../src/plugin/session-compacting.ts          |  27 ++++
+ .../src/testing/create-plugin-module.ts       |   5 +-
+ 4 files changed, 308 insertions(+), 1 deletion(-)
+ create mode 100644 packages/omo-opencode/src/plugin/compaction-autocontinue-reroute.ts
+
+diff --git a/packages/omo-opencode/src/index.compacting.test.ts b/packages/omo-opencode/src/index.compacting.test.ts
+index e52cbe1c3..b965e0d6a 100644
+--- a/packages/omo-opencode/src/index.compacting.test.ts
++++ b/packages/omo-opencode/src/index.compacting.test.ts
+@@ -279,4 +279,131 @@ describe("experimental.compaction.autocontinue handler", () => {
+     expect(restoreContextMock).toHaveBeenCalledTimes(2)
+     expect(restoreTodosMock).toHaveBeenCalledTimes(2)
+   })
++
++  it("reroutes autocontinue to the working model when the compaction model differs", async () => {
++    //#given
++    const restoreContextMock = mock(async () => true)
++    const restoreTodosMock = mock(async () => {})
++    const promptAsyncMock = mock(async () => ({}))
++    const client = {
++      session: {
++        messages: mock(async () => [
++          {
++            id: "msg_working_1",
++            info: {
++              agent: "Sisyphus - ultraworker",
++              model: { providerID: "opencode-go", modelID: "deepseek-v4.1-flash", variant: "max" },
++              time: { created: 1 },
++            },
++            parts: [{ type: "text" }],
++          },
++          {
++            id: "msg_compaction_1",
++            info: {
++              agent: "Sisyphus - ultraworker",
++              model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" },
++              time: { created: 2 },
++            },
++            parts: [{ type: "compaction" }],
++          },
++        ]),
++        promptAsync: promptAsyncMock,
++      },
++    }
++    const handler = createCompactionAutocontinueHandler(
++      {
++        compactionContextInjector: { restore: restoreContextMock },
++        compactionTodoPreserver: { restore: restoreTodosMock },
++      },
++      { client, directory: "C:/work" },
++    )
++    const output = { enabled: true }
++
++    //#when
++    await handler({ sessionID: "ses_reroute", agent: "Sisyphus - ultraworker" }, output)
++
++    //#then
++    expect(output.enabled).toBe(false)
++    expect(restoreContextMock).toHaveBeenCalledWith("ses_reroute")
++    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
++    const call = promptAsyncMock.mock.calls[0] as unknown as [
++      {
++        path: { id: string }
++        query?: { directory?: string }
++        body: {
++          agent?: string
++          model: { providerID: string; modelID: string }
++          parts: Array<{ type: string; text: string; metadata?: Record<string, unknown> }>
++        }
++      },
++    ]
++    const request = call[0]
++    expect(request.path.id).toBe("ses_reroute")
++    expect(request.query?.directory).toBe("C:/work")
++    expect(request.body.agent).toBe("Sisyphus - ultraworker")
++    expect(request.body.model).toEqual({ providerID: "opencode-go", modelID: "deepseek-v4.1-flash" })
++    expect(request.body.parts[0]?.text).toContain("Continue if you have next steps")
++    expect(request.body.parts[0]?.metadata?.compaction_continue).toBe(true)
++  })
++
++  it("keeps autocontinue enabled when the compaction model matches the working model", async () => {
++    //#given
++    const promptAsyncMock = mock(async () => ({}))
++    const client = {
++      session: {
++        messages: mock(async () => [
++          {
++            id: "msg_working_2",
++            info: {
++              agent: "Sisyphus - ultraworker",
++              model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" },
++              time: { created: 1 },
++            },
++            parts: [{ type: "text" }],
++          },
++          {
++            id: "msg_compaction_2",
++            info: {
++              agent: "Sisyphus - ultraworker",
++              model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" },
++              time: { created: 2 },
++            },
++            parts: [{ type: "compaction" }],
++          },
++        ]),
++        promptAsync: promptAsyncMock,
++      },
++    }
++    const handler = createCompactionAutocontinueHandler({}, { client })
++    const output = { enabled: true }
++
++    //#when
++    await handler({ sessionID: "ses_same_model" }, output)
++
++    //#then
++    expect(output.enabled).toBe(true)
++    expect(promptAsyncMock).not.toHaveBeenCalled()
++  })
++
++  it("keeps autocontinue enabled when the session message lookup fails", async () => {
++    //#given
++    const promptAsyncMock = mock(async () => ({}))
++    const client = {
++      session: {
++        messages: mock(async () => {
++          throw new Error("lookup unavailable")
++        }),
++        promptAsync: promptAsyncMock,
++      },
++    }
++    const handler = createCompactionAutocontinueHandler({}, { client })
++    const output = { enabled: true }
++
++    //#when
++    await handler({ sessionID: "ses_lookup_failure" }, output)
++
++    //#then
++    expect(output.enabled).toBe(true)
++    expect(promptAsyncMock).not.toHaveBeenCalled()
++  })
+ })
+diff --git a/packages/omo-opencode/src/plugin/compaction-autocontinue-reroute.ts b/packages/omo-opencode/src/plugin/compaction-autocontinue-reroute.ts
+new file mode 100644
+index 000000000..8ffab9929
+--- /dev/null
++++ b/packages/omo-opencode/src/plugin/compaction-autocontinue-reroute.ts
+@@ -0,0 +1,150 @@
++import {
++  fetchSDKMessages,
++  findNearestMessageWithFieldsFromMessages,
++  type SDKMessage,
++} from "../features/hook-message-injector/sdk-message-lookup"
++import { log } from "../shared/logger"
++
++export const COMPACTION_CONTINUE_TEXT =
++  "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
++
++export type CompactionContinueModel = {
++  readonly providerID: string
++  readonly modelID: string
++}
++
++export type CompactionAutocontinuePromptClient = {
++  readonly session: {
++    messages(input: { readonly path: { readonly id: string } }): Promise<unknown>
++    promptAsync(input: {
++      readonly path: { readonly id: string }
++      readonly query?: { readonly directory?: string }
++      readonly body: {
++        readonly model: { readonly providerID: string; readonly modelID: string }
++        readonly agent?: string
++        readonly parts: Array<{
++          readonly type: "text"
++          readonly text: string
++          readonly metadata?: { readonly [key: string]: unknown }
++        }>
++      }
++    }): Promise<unknown>
++  }
++}
++
++export type CompactionContinueRerouteDecision = {
++  readonly triggerModel: CompactionContinueModel | null
++  readonly workingModel: CompactionContinueModel | null
++  readonly workingAgent: string | null
++}
++
++function readMessageModel(message: SDKMessage | null | undefined): CompactionContinueModel | null {
++  const info = message?.info
++  if (!info) return null
++  const providerID = info.model?.providerID ?? info.providerID
++  const modelID = info.model?.modelID ?? info.modelID
++  if (!providerID || !modelID) return null
++  return { providerID, modelID }
++}
++
++function hasCompactionPart(message: SDKMessage): boolean {
++  return (
++    Array.isArray(message.parts) &&
++    message.parts.some((part) => part?.type === "compaction")
++  )
++}
++
++function sortAscending(messages: readonly SDKMessage[]): SDKMessage[] {
++  return [...messages].sort((left, right) => {
++    const leftTime = left.info?.time?.created ?? 0
++    const rightTime = right.info?.time?.created ?? 0
++    if (leftTime !== rightTime) return leftTime - rightTime
++    const leftId = typeof left.id === "string" ? left.id : ""
++    const rightId = typeof right.id === "string" ? right.id : ""
++    return leftId.localeCompare(rightId)
++  })
++}
++
++export function resolveCompactionContinueModels(
++  messages: readonly SDKMessage[],
++): CompactionContinueRerouteDecision | null {
++  if (!Array.isArray(messages) || messages.length === 0) return null
++
++  const sorted = sortAscending(messages)
++  let triggerModel: CompactionContinueModel | null = null
++  for (let index = sorted.length - 1; index >= 0; index -= 1) {
++    if (hasCompactionPart(sorted[index])) {
++      triggerModel = readMessageModel(sorted[index])
++      break
++    }
++  }
++
++  const nearest = findNearestMessageWithFieldsFromMessages(sorted)
++  const workingModel =
++    nearest?.model?.providerID && nearest.model.modelID
++      ? { providerID: nearest.model.providerID, modelID: nearest.model.modelID }
++      : null
++
++  return { triggerModel, workingModel, workingAgent: nearest?.agent ?? null }
++}
++
++export function shouldRerouteCompactionContinue(
++  decision: CompactionContinueRerouteDecision | null,
++): decision is CompactionContinueRerouteDecision & { workingModel: CompactionContinueModel } {
++  if (!decision || !decision.triggerModel || !decision.workingModel) return false
++  return (
++    decision.triggerModel.providerID !== decision.workingModel.providerID ||
++    decision.triggerModel.modelID !== decision.workingModel.modelID
++  )
++}
++
++export async function resolveCompactionContinueReroute(
++  client: CompactionAutocontinuePromptClient,
++  sessionID: string,
++): Promise<CompactionContinueRerouteDecision | null> {
++  try {
++    const messages = await fetchSDKMessages(client, sessionID)
++    if (!messages) return null
++    return resolveCompactionContinueModels(messages)
++  } catch (error) {
++    log("[session-compacting] compaction continue reroute lookup failed", {
++      sessionID,
++      error: error instanceof Error ? error.message : String(error),
++    })
++    return null
++  }
++}
++
++export async function reissueCompactionContinue(args: {
++  client: CompactionAutocontinuePromptClient
++  directory?: string
++  sessionID: string
++  agent: string | null
++  workingModel: CompactionContinueModel
++}): Promise<boolean> {
++  const { client, directory, sessionID, agent, workingModel } = args
++  try {
++    await client.session.promptAsync({
++      path: { id: sessionID },
++      ...(directory ? { query: { directory } } : {}),
++      body: {
++        ...(agent ? { agent } : {}),
++        model: { providerID: workingModel.providerID, modelID: workingModel.modelID },
++        parts: [
++          {
++            type: "text",
++            text: COMPACTION_CONTINUE_TEXT,
++            metadata: { compaction_continue: true },
++          },
++        ],
++      },
++    })
++    return true
++  } catch (error) {
++    log("[session-compacting] failed to reissue compaction continue", {
++      sessionID,
++      error: error instanceof Error ? error.message : String(error),
++    })
++    return false
++  }
++}
+diff --git a/packages/omo-opencode/src/plugin/session-compacting.ts b/packages/omo-opencode/src/plugin/session-compacting.ts
+index 1e6bda063..92bbf38f7 100644
+--- a/packages/omo-opencode/src/plugin/session-compacting.ts
++++ b/packages/omo-opencode/src/plugin/session-compacting.ts
+@@ -3,6 +3,13 @@ import type { Hooks } from "@opencode-ai/plugin"
+ import { isCompactionAgent } from "../shared/compaction-marker"
+ import { log } from "../shared/logger"
+ 
++import {
++  reissueCompactionContinue,
++  resolveCompactionContinueReroute,
++  shouldRerouteCompactionContinue,
++  type CompactionAutocontinuePromptClient,
++} from "./compaction-autocontinue-reroute"
++
+ type SessionCompactingHook = NonNullable<Hooks["experimental.session.compacting"]>
+ type SessionCompactingInput = Parameters<SessionCompactingHook>[0]
+ type SessionCompactingOutput = Parameters<SessionCompactingHook>[1]
+@@ -27,6 +34,8 @@ export type CompactionAutocontinueHook = (
+ 
+ type CompactionAutocontinueHandlerOptions = {
+   readonly duplicateGuardMs?: number
++  readonly client?: CompactionAutocontinuePromptClient
++  readonly directory?: string
+ }
+ 
+ type TimerHandleWithOptionalUnref = ReturnType<typeof setTimeout> & {
+@@ -177,5 +186,23 @@ export function createCompactionAutocontinueHandler(
+         await restore(input.sessionID)
+       }
+     })
++
++    if (options.client) {
++      const decision = await resolveCompactionContinueReroute(options.client, input.sessionID)
++      if (shouldRerouteCompactionContinue(decision)) {
++        output.enabled = false
++        const reissued = await reissueCompactionContinue({
++          client: options.client,
++          directory: options.directory,
++          sessionID: input.sessionID,
++          agent: typeof input.agent === "string" && input.agent.length > 0 ? input.agent : decision.workingAgent,
++          workingModel: decision.workingModel,
++        })
++        log("[session-compacting] rerouted compaction autocontinue to the working model", {
++          sessionID: input.sessionID,
++          reissued,
++        })
++      }
++    }
+   }
+ }
+diff --git a/packages/omo-opencode/src/testing/create-plugin-module.ts b/packages/omo-opencode/src/testing/create-plugin-module.ts
+index 971e9cb3d..6d41c6e18 100644
+--- a/packages/omo-opencode/src/testing/create-plugin-module.ts
++++ b/packages/omo-opencode/src/testing/create-plugin-module.ts
+@@ -335,7 +335,10 @@ export function createPluginModule(overrides: Partial<PluginModuleDeps> = {}): P
+ 
+       "experimental.session.compacting": createSessionCompactingHandler(hooks),
+ 
+-      "experimental.compaction.autocontinue": createCompactionAutocontinueHandler(hooks),
++      "experimental.compaction.autocontinue": createCompactionAutocontinueHandler(hooks, {
++        client: input.client,
++        directory: input.directory,
++      }),
+ 
+       dispose: async (): Promise<void> => {
+         runtimeSkillSource?.stop()
+-- 
+2.55.0.windows.3
+
