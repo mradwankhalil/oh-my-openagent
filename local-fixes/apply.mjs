@@ -29,6 +29,26 @@ const isGenerated = (line) => GENERATED_PATHS.some((prefix) => line.slice(3).sta
 const quiet = { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
 const git = (args) => execFileSync("git", args, quiet).trim()
 
+/**
+ * Is this fix already present in the source tree?
+ *
+ * Git history is NOT a reliable test: the same fix exists under several SHAs (the original
+ * commit, the variant ported onto a newer base, and any cherry-pick of either), so
+ * `merge-base --is-ancestor` reports \"missing\" for an equivalent change and the applier would
+ * try to re-apply it. Marker strings in the source are SHA-independent, so ask the code.
+ */
+function fixAlreadyPresent(fix) {
+  const markers = fix.markers || []
+  if (markers.length === 0) return false
+  return markers.every((marker) => {
+    try {
+      return git(["grep", "-l", "-F", "--", "packages/omo-opencode/src", marker]).length > 0
+    } catch {
+      return false
+    }
+  })
+}
+
 function fail(message, code) {
   console.error("\n" + message)
   process.exit(code)
@@ -73,6 +93,11 @@ for (const fix of manifest.fixes) {
 
   if (inHistory) {
     results.push([fix.id, "already applied"])
+    continue
+  }
+
+  if (fixAlreadyPresent(fix)) {
+    results.push([fix.id, "already applied (equivalent change under a different commit)"])
     continue
   }
 
