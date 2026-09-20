@@ -5,11 +5,12 @@ import {
 } from "../shared/context-limit-resolver"
 import { log } from "../shared/logger"
 
-import { resolveCompactionModel } from "./shared/compaction-model-resolver"
+import { resolveCompactionModelDecision } from "./shared/compaction-model-resolver"
 import { resolveEmptySummaryFromSession } from "./preemptive-compaction-empty-summary"
 import type {
   CachedCompactionState,
   PreemptiveCompactionContext,
+  SummarizeAttempt,
 } from "./preemptive-compaction-types"
 
 // A summarize of a large context runs long: in a 1M-window session, four consecutive
@@ -19,6 +20,13 @@ import type {
 const PREEMPTIVE_COMPACTION_TIMEOUT_MS = 120_000
 const PREEMPTIVE_COMPACTION_THRESHOLD = 0.78
 const PREEMPTIVE_COMPACTION_COOLDOWN_MS = 60_000
+// A summarize whose provider stream never settles would otherwise keep the admission
+// guard for the session forever and silently disable preemptive compaction until the
+// plugin restarts. Release a guard that has outlived this ceiling at the next
+// admission attempt, so a hung provider stream can never block the session for good.
+// The normal cooldown still prevents a re-fire storm.
+const PREEMPTIVE_COMPACTION_STALL_RELEASE_MS = 600_000
+let summarizeAttemptCounter = 0
 
 declare function setTimeout(handler: () => void, timeout?: number): unknown
 declare function clearTimeout(timeoutID: unknown): void
@@ -50,6 +58,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
   compactionInProgress: Set<string>
   compactedSessions: Set<string>
   lastCompactionTime: Map<string, number>
+  summarizeStartedAt: Map<string, SummarizeAttempt>
 }): Promise<void> {
   const {
     ctx,
@@ -60,7 +69,22 @@ export async function runPreemptiveCompactionIfNeeded(args: {
     compactionInProgress,
     compactedSessions,
     lastCompactionTime,
+    summarizeStartedAt,
   } = args
+
+  const previousAttempt = summarizeStartedAt.get(sessionID)
+  if (
+    previousAttempt &&
+    Date.now() - previousAttempt.startedAt >= PREEMPTIVE_COMPACTION_STALL_RELEASE_MS
+  ) {
+    log("[preemptive-compaction] releasing a stalled summarize guard", {
+      sessionID,
+      pendingMs: Date.now() - previousAttempt.startedAt,
+      releaseAfterMs: PREEMPTIVE_COMPACTION_STALL_RELEASE_MS,
+    })
+    summarizeStartedAt.delete(sessionID)
+    compactionInProgress.delete(sessionID)
+  }
 
   if (compactedSessions.has(sessionID) || compactionInProgress.has(sessionID)) return
 
@@ -88,26 +112,51 @@ export async function runPreemptiveCompactionIfNeeded(args: {
   const usageRatio = totalInputTokens / actualLimit
   if (usageRatio < PREEMPTIVE_COMPACTION_THRESHOLD || !cached.modelID) return
 
+  summarizeAttemptCounter += 1
+  const attempt: SummarizeAttempt = {
+    startedAt: Date.now(),
+    attemptID: summarizeAttemptCounter,
+  }
   compactionInProgress.add(sessionID)
+  summarizeStartedAt.set(sessionID, attempt)
   lastCompactionTime.set(sessionID, Date.now())
+  let targetLabel = `${cached.providerID}/${cached.modelID}`
 
   try {
-    const { providerID: targetProviderID, modelID: targetModelID } = resolveCompactionModel(
+    const decision = resolveCompactionModelDecision(
       pluginConfig,
       sessionID,
       cached.providerID,
       cached.modelID,
+      cached.agent,
     )
+    targetLabel = `${decision.providerID}/${decision.modelID}`
+
+    log("[preemptive-compaction] summarize model resolved", {
+      sessionID,
+      source: decision.source,
+      reason: decision.reason,
+      agentName: decision.agentName,
+      agentConfigKey: decision.agentConfigKey,
+      pinnedModel: decision.pinnedModel,
+      target: targetLabel,
+      sessionModel: `${cached.providerID}/${cached.modelID}`,
+      usageRatio: Number(usageRatio.toFixed(4)),
+    })
 
     const summarizePromise = ctx.client.session.summarize({
       path: { id: sessionID },
-      body: { providerID: targetProviderID, modelID: targetModelID, auto: true },
+      body: { providerID: decision.providerID, modelID: decision.modelID, auto: true },
       query: { directory: ctx.directory },
     })
-    void summarizePromise.then(
-      () => compactionInProgress.delete(sessionID),
-      () => compactionInProgress.delete(sessionID),
-    )
+
+    const releaseInProgress = () => {
+      // A superseded attempt must not clear the guard a newer attempt owns.
+      if (summarizeStartedAt.get(sessionID)?.attemptID !== attempt.attemptID) return
+      compactionInProgress.delete(sessionID)
+      summarizeStartedAt.delete(sessionID)
+    }
+    void summarizePromise.then(releaseInProgress, releaseInProgress)
 
     await withTimeout(
       summarizePromise,
@@ -127,13 +176,13 @@ export async function runPreemptiveCompactionIfNeeded(args: {
     if (emptySummary) {
       log("[preemptive-compaction] Compaction produced an empty summary; not marking session compacted", {
         sessionID,
-        providerID: targetProviderID,
-        modelID: targetModelID,
+        providerID: decision.providerID,
+        modelID: decision.modelID,
       })
       ctx.client.tui.showToast({
         body: {
           title: "Preemptive compaction produced no summary",
-          message: `Compaction ran on ${targetProviderID}/${targetModelID} but returned an empty summary. The session was not compacted and will retry.`,
+          message: `Compaction ran on ${decision.providerID}/${decision.modelID} but returned an empty summary. The session was not compacted and will retry.`,
           variant: "warning",
           duration: 10000,
         },
@@ -151,6 +200,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
     const errorMessage = String(error)
     log("[preemptive-compaction] Compaction failed", {
       sessionID,
+      target: targetLabel,
       providerID: cached.providerID,
       modelID: cached.modelID,
       error: errorMessage,
