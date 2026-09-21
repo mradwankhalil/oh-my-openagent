@@ -96,27 +96,44 @@ if (srcMissing === 0) ok("source tree contains every marker (a rebuild would kee
 
 // ── 4. Are the fix commits reachable from HEAD? ──────────────────────────────
 const unreachable = []
+// A fix is safe to re-apply as long as its commit still EXISTS in this repo: apply.mjs
+// cherry-picks by SHA, and the SHA does not have to be an ancestor of HEAD. Fix 05 is
+// recorded as the PR-branch commit while this branch carries the cherry-picked twin.
+const missingCommits = []
+const notInHistory = []
 for (const fix of manifest.fixes) {
-  const inHistory = tryGit(["merge-base", "--is-ancestor", fix.commit, "HEAD"]) !== ""
-  // merge-base --is-ancestor prints nothing on success, so probe via rev-list instead
-  const reachable = (() => {
-    try {
-      execFileSync("git", ["merge-base", "--is-ancestor", fix.commit, "HEAD"], quiet)
-      return true
-    } catch {
-      return false
-    }
-  })()
-  void inHistory
-  if (!reachable) unreachable.push(fix.id)
+  let exists = true
+  try {
+    execFileSync("git", ["cat-file", "-e", `${fix.commit}^{commit}`], quiet)
+  } catch {
+    exists = false
+  }
+  if (!exists) missingCommits.push(fix.id)
+
+  let ancestor = true
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", fix.commit, "HEAD"], quiet)
+  } catch {
+    ancestor = false
+  }
+  if (!ancestor) notInHistory.push(fix.id)
 }
-if (unreachable.length === 0) {
-  ok("every fix commit is reachable from HEAD (cherry-pick path is available)")
+
+if (missingCommits.length === 0) {
+  ok("every fix commit exists in this repo (cherry-pick fallback is available)")
 } else {
   bad(
-    `not reachable from HEAD: ${unreachable.join(", ")}.\n` +
-      `        The commit still exists in this repo, so a fresh pull can cherry-pick it,\n` +
-      `        but it will not be present until fixes:apply runs.`,
+    `commit(s) missing from the repo entirely: ${missingCommits.join(", ")}.\n` +
+      `        Only the patch file can re-apply these now. Check that it still applies.`,
+  )
+}
+
+if (notInHistory.length === 0) {
+  ok("every fix commit is already in HEAD's history (nothing left to re-apply)")
+} else {
+  ok(
+    `${notInHistory.length} fix commit(s) are not ancestors of HEAD but exist in the repo ` +
+      `(${notInHistory.join(", ")}); apply.mjs resolves them by marker or cherry-pick.`,
   )
 }
 
