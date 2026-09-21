@@ -63,6 +63,83 @@
       "markers": ["Task exceeded the hard deadline"],
       "overlapsWith": [],
       "orderNote": "Independent of 01-04. Safe anywhere in the order."
+    },
+    {
+      "id": "06-provider-retry-bound",
+      "title": "Bound provider-error continuation retries",
+      "commit": "91c4151a6",
+      "patch": "patches/06-provider-retry-bound.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
+      "why": "A retryable provider error (HTTP 503) let the todo-continuation enforcer re-dispatch indefinitely, burning tokens against a provider that was down. Adds isRetryableProviderError() and bounds consecutive retries.",
+      "markers": ["isRetryableProviderError"],
+      "overlapsWith": ["07-pause-after-provider-failure", "08-preserve-failure-streak"],
+      "orderNote": "Adds the handler/session-state/types surface that 07 and 08 build on. Keep first."
+    },
+    {
+      "id": "07-pause-after-provider-failure",
+      "title": "Pause continuation after repeated provider failures",
+      "commit": "467366fca",
+      "patch": "patches/07-pause-after-provider-failure.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
+      "why": "Continuation kept firing after the provider had already failed repeatedly. Idle events now consult the provider-failure boundary and honour the recovery window instead of resuming immediately.",
+      "markers": ["failureResetWindowElapsed"],
+      "overlapsWith": ["06-provider-retry-bound", "08-preserve-failure-streak"],
+      "orderNote": "Depends on 06's session-state fields. Keep after 06."
+    },
+    {
+      "id": "08-preserve-failure-streak",
+      "title": "Preserve the provider failure streak across non-idle events",
+      "commit": "e7516468f",
+      "patch": "patches/08-preserve-failure-streak.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
+      "why": "Non-idle events reset consecutiveProviderFailures to 0, so any unrelated event defeated the retry bound added by 06 and the failure loop continued.",
+      "markers": ["consecutiveProviderFailures"],
+      "overlapsWith": ["06-provider-retry-bound"],
+      "orderNote": "Touches non-idle-events.ts only. Keep after 06."
+    },
+    {
+      "id": "09-progress-type-import",
+      "title": "Align the continuation progress type import",
+      "commit": "6ce874755",
+      "patch": "patches/09-progress-type-import.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
+      "why": "Type-only fix: ContinuationProgressUpdate and SessionStateStore were imported from the wrong modules, so the 07/08 surface failed typecheck.",
+      "markers": [],
+      "overlapsWith": ["07-pause-after-provider-failure"],
+      "orderNote": "Import alignment for the 07/08 surface. Keep after 08. Deliberately has NO markers: it only touches a test file and a type-only import, both erased before bundling, so no string from it can ever appear in dist/index.js and a marker would make the step-4 bundle check fail forever. Applied by cherry-pick; not bundle-verifiable by design."
+    },
+    {
+      "id": "10-first-prompt-watchdog",
+      "title": "Extend the first-prompt watchdog so a slow first token can arrive",
+      "commit": "580bcd571",
+      "patch": "patches/10-first-prompt-watchdog.patch",
+      "pr": null,
+      "why": "The runtime-fallback watchdog fired before a slow provider produced its first token, swapping out a healthy-but-slow model mid-request. Raises the default to 180s.",
+      "markers": ["DEFAULT_FIRST_PROMPT_WATCHDOG_MS"],
+      "overlapsWith": [],
+      "orderNote": "Independent of 06-09. Safe anywhere after 05. No upstream PR filed yet."
+    },
+    {
+      "id": "11-cancel-explicit-state",
+      "title": "Track explicit cancellation state on a task",
+      "commit": "f6b43a05a",
+      "patch": "patches/11-cancel-explicit-state.patch",
+      "pr": null,
+      "why": "Adds cancellationRequested to the background task type so the manager can tell a real user cancel apart from an idle-event race.",
+      "markers": ["cancellationRequested"],
+      "overlapsWith": ["12-cancel-lifecycle-events"],
+      "orderNote": "Types-only change that 12 consumes. Keep before 12. No upstream PR filed yet."
+    },
+    {
+      "id": "12-cancel-lifecycle-events",
+      "title": "Preserve background-agent lifecycle events during cancellation",
+      "commit": "168e72192",
+      "patch": "patches/12-cancel-lifecycle-events.patch",
+      "pr": null,
+      "why": "A cancellation racing an idle event dropped the task's terminal lifecycle events, so downstream consumers never observed the task finishing. Defers, replays, or discards them deterministically instead.",
+      "markers": ["deferCancellationEvent", "replayCancellationEvents", "discardCancellationEvents"],
+      "overlapsWith": ["11-cancel-explicit-state"],
+      "orderNote": "Depends on 11's cancellationRequested field. Keep last. No upstream PR filed yet."
     }
   ],
   "externalFixes": [
