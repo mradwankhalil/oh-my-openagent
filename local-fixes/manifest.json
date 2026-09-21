@@ -114,33 +114,33 @@
       "title": "Extend the first-prompt watchdog so a slow first token can arrive",
       "commit": "580bcd571",
       "patch": "patches/10-first-prompt-watchdog.patch",
-      "pr": null,
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "The runtime-fallback watchdog fired before a slow provider produced its first token, swapping out a healthy-but-slow model mid-request. Raises the default to 180s.",
       "markers": ["DEFAULT_FIRST_PROMPT_WATCHDOG_MS"],
       "overlapsWith": [],
-      "orderNote": "Independent of 06-09. Safe anywhere after 05. No upstream PR filed yet."
+      "orderNote": "Independent of 06-09. Covered by PR #8167, whose title mentions only the cancellation race and never the watchdog - do NOT judge coverage by title. Its commit there is d63e1baef."
     },
     {
       "id": "11-cancel-explicit-state",
       "title": "Track explicit cancellation state on a task",
       "commit": "f6b43a05a",
       "patch": "patches/11-cancel-explicit-state.patch",
-      "pr": null,
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "Adds cancellationRequested to the background task type so the manager can tell a real user cancel apart from an idle-event race.",
       "markers": ["cancellationRequested"],
       "overlapsWith": ["12-cancel-lifecycle-events"],
-      "orderNote": "Types-only change that 12 consumes. Keep before 12. No upstream PR filed yet."
+      "orderNote": "Types-only change that 12 consumes. Keep before 12. Covered by PR #8167 (commit 100715c38) together with 12."
     },
     {
       "id": "12-cancel-lifecycle-events",
       "title": "Preserve background-agent lifecycle events during cancellation",
       "commit": "168e72192",
       "patch": "patches/12-cancel-lifecycle-events.patch",
-      "pr": null,
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "A cancellation racing an idle event dropped the task's terminal lifecycle events, so downstream consumers never observed the task finishing. Defers, replays, or discards them deterministically instead.",
       "markers": ["deferCancellationEvent", "replayCancellationEvents", "discardCancellationEvents"],
       "overlapsWith": ["11-cancel-explicit-state"],
-      "orderNote": "Depends on 11's cancellationRequested field. Keep last. No upstream PR filed yet."
+      "orderNote": "Depends on 11's cancellationRequested field. Keep last. Covered by PR #8167 (commit 924555133), which also carries 11 in dependency order."
     }
   ],
   "externalFixes": [
