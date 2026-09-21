@@ -3,6 +3,7 @@
   "purpose": "Every local OMO fix we own, in dependency order. Applied automatically by local-fixes/apply.mjs after an OMO update so a rebuilt dist always contains all of them.",
   "repo": "oh-my-openagent-fix",
   "appliesTo": "packages/omo-opencode",
+  "bundleBranch": "local/bundle-all",
   "build": {
     "command": "bun run build",
     "artifact": "dist/index.js"

@@ -128,6 +128,8 @@
     "build:model-capabilities": "bun run script/build-model-capabilities.ts",
     "clean": "rm -rf dist",
     "fixes:apply": "bun run local-fixes/apply.mjs",
+    "fixes:verify": "bun run local-fixes/verify.mjs",
+    "fixes:hooks": "node local-fixes/install-hooks.mjs",
     "prepack": "bun run build:materialize-frontend",
     "prepare": "bun run build",
     "postinstall": "node postinstall.mjs",
