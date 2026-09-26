@@ -9,6 +9,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 import process from "node:process"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
+import type { LspRequestContext, StandaloneMcpRequestContextInput } from "@oh-my-opencode/lsp-core/request-context"
+
 const ENGINE_TOOLS = "packages/lsp-tools-mcp/src/tools.ts"
 const ENGINE_CONTEXT = "packages/lsp-tools-mcp/src/request-context.ts"
 const ENGINE_MANAGER = "packages/lsp-tools-mcp/src/lsp/manager.ts"
@@ -32,7 +34,8 @@ interface ToolsModule {
 }
 
 interface ContextModule {
-	readonly runWithRequestContext: <T>(context: { cwd?: string; env?: Record<string, string> }, fn: () => T) => T
+	readonly createStandaloneMcpRequestContext: (input?: StandaloneMcpRequestContextInput) => LspRequestContext
+	readonly runWithRequestContext: <T>(context: LspRequestContext, fn: () => T) => T
 }
 
 interface ManagerModule {
@@ -96,7 +99,8 @@ async function run(filePath: string, timeoutMs: number): Promise<number> {
 
 	try {
 		const signal = AbortSignal.timeout(timeoutMs)
-		const result = await context.runWithRequestContext({ cwd: process.cwd(), env: buildEnv() }, () =>
+		const requestContext = context.createStandaloneMcpRequestContext({ cwd: process.cwd(), env: buildEnv() })
+		const result = await context.runWithRequestContext(requestContext, () =>
 			tools.executeLspDiagnostics({ filePath: absolute, severity: "all" }, signal),
 		)
 		const details = isDiagnosticsDetails(result.details) ? result.details : null
