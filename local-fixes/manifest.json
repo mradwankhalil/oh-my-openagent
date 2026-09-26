@@ -152,6 +152,18 @@
       "markers": ["WaitForExit", "taskkill /F /T /PID"],
       "verifyWith": "node C:\\Users\\Zephyrus\\.config\\opencode\\tests\\squeez-plugin.test.mjs",
       "note": "Not part of the OMO repo; unaffected by an OMO update."
+    },
+    {
+      "id": "opencode-compaction-anchor-fix",
+      "title": "Anchor compaction summary to the marker message instead of lastUser",
+      "repo": "C:\\Users\\Zephyrus\\Documents\\ai\\opencode-core-fix",
+      "pipeline": "cd C:\\Users\\Zephyrus\\Documents\\ai\\opencode-core-fix && bun run fixes:apply && bun run fixes:verify",
+      "fixCommit": "b855924e87db342c69a3a4c26beefc77f4cdc858",
+      "base": "v1.18.32",
+      "why": "prompt.ts passed parentID: lastUser.id when creating the compaction summary. If a prompt landed between the compaction marker and the summary creation, the summary was orphaned (compaction loop) and the marker's model (a plugin-supplied pin) was discarded. Anchoring to the marker fixes both symptoms.",
+      "markers": ["configured-compaction-agent", "request-marker", "marker already carries a completed summary"],
+      "verifyWith": "cd C:\\Users\\Zephyrus\\Documents\\ai\\opencode-core-fix && bun run fixes:verify",
+      "note": "Not part of the OMO repo. Has its own ledger at opencode-core-fix/local-fixes. Upgrades: bun run fixes:apply <version> rebuilds from the new tag, re-applies the immutable fix commit, gates on the test file + 3 binary markers, and stages to a stable filename. v1.x ONLY - the pipeline refuses v2+. OpenChamber is pinned to the staged binary by the User env var OPENCODE_BINARY (read at startup); opencodeBinary in ~/.config/openchamber/settings.json is cosmetic and gets dropped on settings rewrites."
     }
   ]
 }
