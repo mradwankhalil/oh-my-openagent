@@ -38,8 +38,14 @@ export {
   messageability,
   transitionTaskRecord,
 } from "./state"
+export { createIsolationRuntime, isolationBackends } from "./isolation"
+export type { IsolationRuntime, OwnerProbe } from "./isolation"
 export type {
   BackgroundMode,
+  IsolationBackendKind,
+  IsolationMergeResult,
+  IsolationRecord,
+  TaskIsolationSpec,
   CostReportStatus,
   DurationSourceStatus,
   LegacyProcessSpawnSpec,
@@ -69,6 +75,7 @@ export type {
   TaskRecordStore,
 } from "./store"
 export {
+  buildLiveStatsTokens,
   composeStatusLine,
   formatLiveSpend,
   formatRunSpend,
@@ -78,12 +85,13 @@ export {
   taskIdentityLabel,
   toolCountSuffix,
 } from "./status-line"
-export type { StatusLineInput, StatusLineStats, StatusTargetInput, TaskIdentityInput } from "./status-line"
+export type { LiveStatsTokens, StatusLineInput, StatusLineStats, StatusTargetInput, TaskIdentityInput } from "./status-line"
 export { TASK_SUMMARY_MAX_LENGTH, clampTaskSummary } from "./task-summary"
 export {
   assistantLastLine,
   createChildProgress,
   formatToolActivity,
+  selectLiveActivityVerb,
   type ToolProgressDetails,
 } from "./progress"
 export { createMinimalSenpiResourceLoader } from "./senpi/minimal-resource-loader"
@@ -158,7 +166,15 @@ export type {
   SubagentPromptInput,
 } from "./runners"
 export {
+  ensureTaskDaemon,
+  HostUnavailableError,
+  isHostSessionHandle,
+  readMemberSessionIdentity,
+  readSessionContext,
+  readSessionRole,
+  resolveTaskHostSocket,
   RpcCommandError,
+  RpcHostRunner,
   RpcProcessRunner,
   RpcProtocolClient,
   buildAutoUiResponse,
@@ -177,20 +193,34 @@ export {
   tailStderr,
   terminateRpcChild,
 } from "./runners"
+export { resolveInheritedExtensionList, selectPackageExtensionPaths } from "./runners/rpc/parent-extensions"
+export type { InheritedExtensions } from "./runners/rpc/parent-extensions"
 export type {
   ChildEventListener,
   ChildExitFacts,
   ChildExitInput,
   ChildExitOutcome,
+  CreateHostSessionChannel,
   CreateRpcChildHandleOptions,
+  EnsuredTaskDaemon,
+  EnsureTaskDaemonInput,
+  EnsureTaskDaemonPort,
+  FallbackChildRunner,
+  HostUnavailableReason,
+  HostSessionChannel,
+  HostSessionChildHandle,
+  HostSessionFacts,
   MalformedLineHandler,
+  MemberSessionIdentity,
   RpcChildHandle,
+  RpcHostRunnerOptions,
   RpcProcessRunnerOptions,
   RpcProtocolClientOptions,
   RpcRunnerSpec,
   RpcSpawnDescriptor,
   RpcSpawnRuntime,
   SenpiLauncher,
+  SessionRole,
   RunnerErrorFacts,
   TerminateOptions,
 } from "./runners"
@@ -203,8 +233,10 @@ export {
   createParentRegistrySessionContext,
   createRpcManagedRunner,
   createTaskManager,
+  createExecutionModeGate,
   decideDepthPolicy,
   findModelReference,
+  resolveAutoExecutionMode,
   resolveExecutionMode,
 } from "./manager"
 export type {
@@ -215,7 +247,9 @@ export type {
   ContinueResult,
   DepthDecision,
   DepthPolicyInput,
+  ConfiguredExecutionMode,
   ExecutionMode,
+  ExecutionModeGate,
   ExecutionModeSources,
   InProcessRunnerLike,
   InProcessSessionContext,

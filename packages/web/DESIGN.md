@@ -370,12 +370,22 @@ Roboto Mono family, Regular 400 followed by Bold 700.
 - Headline: (494, 349), Roboto Mono 36 px, 46 px line height, zero tracking.
   Two unbroken lines: “Your tool for real work.” (400), “But it's an agent.” (700).
   The original tagline's special capital-O glyph does not occur in the new copy.
-- Proof: lower-left (48, bottom 42), 40 px GitHub mark, 16 px gap, Roboto Mono
-  36 px. Whole-thousand floor, uppercase K and plus, e.g. 69,999 → `69K+ Stars`.
-  Counts below 1,000 remain exact. No extra download figure or website label.
+- Proof: top-left (48, top 42), Roboto Mono 48 px, one row of two items 44 px
+  apart, each a 52 px mark + 18 px gap + label. Stars: GitHub mark, whole-thousand
+  floor, uppercase K and plus, e.g. 69,999 → `69K+ Stars`. Downloads: npm mark,
+  all-time npm total of `oh-my-opencode` + `oh-my-openagent` + `omo-ai` +
+  `lazycodex-ai` (the same figure as the site, `lib/npm-downloads.ts`), floored to
+  0.1 M, e.g. 4,032,665 → `4M+ Downloads`, 3,894,680 → `3.8M+ Downloads`.
+  Counts below 1,000 remain exact. No website label.
 - Star states: fresh/cached for up to 5 minutes; last known good for at most
   24 hours on GitHub failure; otherwise `GitHub` without an invented count.
-  Degraded responses are not cached, allowing immediate recovery.
+  Download states: fetched independently of stars (an npm outage never freezes
+  stars), fresh for 1 hour, last known good for at most 24 hours, otherwise the
+  downloads item is omitted. Each refresh makes two attempts, and every good
+  figure is also kept in the colo-shared Workers Cache API (24 h), so a freshly
+  started isolate (the one a crawler usually hits) reuses it instead of dropping
+  the figure. Any degraded figure makes the response `no-store`;
+  otherwise `s-maxage` is the smallest remaining freshness.
 - Both social routes render on demand, not as build snapshots. Fonts and artwork
   are bundled into the renderer; no runtime font CDN, Figma URL, or npm request.
 - Accessibility/QA: descriptive metadata alt, high-contrast text, native-size

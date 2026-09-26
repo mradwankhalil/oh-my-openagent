@@ -29,6 +29,7 @@ export const NUDGE_TOOL = "nudge"
 export const NUDGED_ENTRY_TYPE = "omo-kibitzer:nudged"
 export const RECALL_ENTRY_TYPE = "omo-kibitzer:recall"
 export const GATE_ENTRY_TYPE = "omo-kibitzer:gate"
+export const UNAVAILABLE_ENTRY_TYPE = "omo-kibitzer:unavailable"
 
 export const TURN_TIMEOUT_MS = 60_000
 export const WAKE_TIMEOUT_MS = 60_000
@@ -129,10 +130,14 @@ export function prepareSandbox(pluginRoot, baseUrl) {
   return { ...sandbox, memoryHome: join(sandbox.root, "memory"), sessionsDir: join(sandbox.agentDir, "sessions") }
 }
 
-/** `recall` merges over the lane's defaults; `max_items: 1` makes the nudge closure end a wake on its first accept. */
-export function writeOmoConfig(sandbox, { recallEnabled, recall = {} }) {
+/**
+ * `recall` merges over the lane's defaults; `max_items: 1` makes the nudge closure end a wake on its
+ * first accept. `categories` replaces the lane's mock quick pin - `{}` leaves the recall category on
+ * its builtin chain, whose providers this sandbox never connects (only `omo-mock` is authenticated).
+ */
+export function writeOmoConfig(sandbox, { recallEnabled, recall = {}, categories = { quick: { description: "QA mock quick category", model: "omo-mock/mock-1" } } }) {
   writeFileSync(join(sandbox.cwd, ".omo", "omo.json"), `${JSON.stringify({
-    categories: { quick: { description: "QA mock quick category", model: "omo-mock/mock-1" } },
+    categories,
     memory: {
       enabled: true,
       recall: { enabled: recallEnabled, max_items: 1, ...recall },
@@ -413,6 +418,7 @@ export function readEntries(file) {
 export const isNudged = (entry) => entry.type === "custom" && entry.customType === NUDGED_ENTRY_TYPE
 export const isRecall = (entry) => entry.type === "custom_message" && entry.customType === RECALL_ENTRY_TYPE
 export const isGate = (entry) => entry.type === "custom" && entry.customType === GATE_ENTRY_TYPE
+export const isUnavailable = (entry) => entry.type === "custom" && entry.customType === UNAVAILABLE_ENTRY_TYPE
 export const isUserMessage = (entry) => entry.type === "message" && entry.message?.role === "user"
 export const isAssistantMessage = (entry) => entry.type === "message" && entry.message?.role === "assistant"
 
@@ -450,6 +456,11 @@ export function sidecarDirs(identityDir) {
   const root = join(identityDir, "runtime", "recall", "sidecars")
   if (!existsSync(root)) return []
   return readdirSync(root).sort().map((name) => ({ name, dir: join(root, name), sessionId: decodeSidecarDirName(name) }))
+}
+
+/** `wakes.ndjson`: one bounded record per settled wake of that lineage. */
+export function wakeRecords(sidecarDir) {
+  return readEntries(join(sidecarDir, "wakes.ndjson"))
 }
 
 export function childTranscripts(sidecarDir) {

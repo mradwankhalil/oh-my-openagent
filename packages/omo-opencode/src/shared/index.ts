@@ -17,6 +17,7 @@ export * from "./claude-config-dir"
 export * from "./jsonc-parser"
 export * from "./migration"
 export * from "./opencode-config-dir"
+export * from "./opencode-plugin-sandbox"
 export * from "./resolve-agent-definition-paths"
 export type {
   OpenCodeBinaryType,

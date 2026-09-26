@@ -1,8 +1,16 @@
 import type { OmoTaskSettings } from "@oh-my-opencode/omo-config-core"
+import type { IsolationRuntime, OwnerProbe } from "../isolation"
 import { log } from "@oh-my-opencode/utils"
 
 import type { KernelToolBindingRegistry } from "../kernel-tools/bindings"
 import type { TaskRecordStore } from "../store"
+import {
+  DEFAULT_HOST_SESSION_RETRY_POLICY,
+  type HostSessionCloser,
+  type HostSessionProbe,
+  type HostSessionRetryPolicy,
+} from "./host-session"
+import { defaultHostSessionCloser, defaultHostSessionProbe } from "./host-session-default"
 import { injectedLifecycleReattachPorts } from "./port"
 import type { IdleReclaimerScheduler, LifecycleDeps, LifecycleReattachPorts, ProcessSignaller, ResidencyRegistry } from "./port"
 import type { BatchAdmissionOptions } from "./residency"
@@ -28,6 +36,13 @@ export type LifecycleContext = {
   // Runtime-only parent kernel-tool map (item 6). Deliberate destruction and record expunge release
   // a child's binding here; idle parking deliberately does NOT.
   readonly kernelToolBindings: KernelToolBindingRegistry | undefined
+  // Liveness of daemon-hosted children: ONE probeHost + ONE list_sessions per pass, matched by
+  // session path. `hostSessionClose` is the ONLY way a session this process does not hold is ended.
+  readonly hostSessionProbe: HostSessionProbe
+  readonly hostSessionClose: HostSessionCloser | undefined
+  readonly hostRetry: HostSessionRetryPolicy
+  readonly isolation: IsolationRuntime | undefined
+  readonly isolationProbe: OwnerProbe | undefined
 }
 
 // The sole default OS-process signaller: process.kill lives here (audited-in via src/lifecycle) so
@@ -66,6 +81,11 @@ export function resolveContext(deps: LifecycleDeps): LifecycleContext {
     reconcileAdmission: deps.reconcileAdmission ?? {},
     idleReclaimerScheduler: deps.idleReclaimerScheduler ?? defaultIdleReclaimerScheduler,
     kernelToolBindings: deps.kernelToolBindings,
+    hostSessionProbe: deps.hostSessionProbe ?? defaultHostSessionProbe(),
+    hostSessionClose: deps.hostSessionClose ?? defaultHostSessionCloser,
+    hostRetry: deps.hostRetry ?? DEFAULT_HOST_SESSION_RETRY_POLICY,
+    isolation: deps.isolation,
+    isolationProbe: deps.isolationProbe,
   }
 }
 

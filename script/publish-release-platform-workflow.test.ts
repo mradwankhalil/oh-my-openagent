@@ -356,11 +356,14 @@ describe("release binary asset lane in the platform publish workflow", () => {
     }
 
     // #when / #then
-    // Exact stamped version assert: a missing sibling package.json silently
-    // stamps 0.0.0, so the full line including the engine pin is compared.
+    // Stamped version assert, compared as a prefix: a missing sibling package.json
+    // silently stamps 0.0.0, so the version and the engine pin stay under comparison,
+    // while the engine build stamp that follows the pin varies per build.
     expect(smokeStep).toContain(
-      'EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN})"',
+      'EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN}"',
     )
+    // the line must still close, so a truncated version line cannot pass
+    expect(smokeStep).toContain('"${EXPECTED_VERSION_LINE}"*")")')
     expect(smokeStep).toContain("ENGINE_PIN=")
     // isolation: every exec runs against fresh HOME/XDG/OMO_CODING_AGENT_DIR
     expect(smokeStep).toContain("mktemp -d")
@@ -432,8 +435,9 @@ describe("release binary asset lane in the platform publish workflow", () => {
     expect(job).toContain("omo-linux-arm64")
     expect(job).toContain("alpine:")
     expect(job).toContain("apk add --no-cache libstdc++")
-    // same exact version-line contract as the build-job smoke
-    expect(job).toContain("(engine: senpi ${ENGINE_PIN})")
+    // same version-line contract as the build-job smoke
+    expect(job).toContain("(engine: senpi ${ENGINE_PIN}")
+    expect(job).toContain('"${EXPECTED_VERSION_LINE}"*")")')
     expect(job).toContain("binary-runtime/${OMO_AI_VERSION}")
   })
 

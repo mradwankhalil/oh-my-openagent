@@ -16,7 +16,7 @@ import {
   resolveMemoryConfig,
 } from "./index"
 import { componentContext, loadedMemoryConfig, memorySettings, MemoryFakeExtensionAPI, sessionContext } from "./memory.test-support"
-import { GATE_ENTRY_TYPE, NUDGED_ENTRY_TYPE } from "./kibitzer/notice"
+import { GATE_ENTRY_TYPE, NUDGED_ENTRY_TYPE, UNAVAILABLE_ENTRY_TYPE } from "./kibitzer/notice"
 import { RECALL_CUSTOM_TYPE } from "./recall-wiring"
 import { SOUL_UPDATED_ENTRY_TYPE } from "./soul-notice"
 
@@ -146,14 +146,13 @@ describe("createMemoryComponent", () => {
 
     expect(pi.entryRenderers.map((entry) => entry.customType)).toEqual([
       "senpi-memory.reflection-completion",
-      "senpi-memory.reflection-launched",
-      "senpi-memory.reflection-summary",
       "senpi-memory.health",
       "senpi-memory.reflection-parked",
       SOUL_UPDATED_ENTRY_TYPE,
       RECALL_CUSTOM_TYPE,
       NUDGED_ENTRY_TYPE,
       GATE_ENTRY_TYPE,
+      UNAVAILABLE_ENTRY_TYPE,
       "omo-memorian:recall",
       "omo-memorian:nudged",
       "omo-memorian:gate",

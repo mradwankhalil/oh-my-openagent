@@ -1,6 +1,6 @@
 {
   "name": "@code-yeongyu/omo-senpi",
-  "version": "5.0.0-beta.72",
+  "version": "5.0.0-beta.90",
   "private": true,
   "description": "OMO Senpi adapter packaged as one local-path Pi package.",
   "type": "module",
@@ -30,6 +30,7 @@
     "CHANGELOG.md",
     "README.md",
     "NOTICE",
-    "LICENSE"
+    "LICENSE",
+    "daemon-launch-spec.json"
   ]
 }

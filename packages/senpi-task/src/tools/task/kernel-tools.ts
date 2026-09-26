@@ -1,7 +1,7 @@
 import { agentToolPolicy } from "../../agents/agent-tool-policy"
 import { readKernelToolsCapability } from "../../kernel-tools/contract"
 import { resolveKernelToolGrant, type KernelToolGrant } from "../../kernel-tools/resolve"
-import { taskExecutionModeFor } from "./execute-spec"
+import { ensureAutoExecutionMode, taskExecutionModeFor } from "./execute-spec"
 import type { ResolvedSpawnItem, TaskKernelToolsDetail, TaskToolContext, TaskToolDeps } from "./types"
 
 export type TaskKernelToolsResolution =
@@ -23,6 +23,9 @@ export async function resolveTaskKernelTools(
   requested: readonly string[] | undefined,
 ): Promise<TaskKernelToolsResolution> {
   if (requested === undefined || requested.length === 0) return { kind: "none" }
+  // The grant is decided against the mode the child will really run in, so the parent session's
+  // `auto` resolution settles first (it is memoized; this is the same check the spawn makes).
+  await ensureAutoExecutionMode(deps)
   const capability = readKernelToolsCapability(ctx)
   // The names the child will already carry, so a colliding request and a policy-narrowed child are
   // both refused here rather than at the runner floor (which runs after the record is written).

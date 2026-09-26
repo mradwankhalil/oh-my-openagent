@@ -17,6 +17,13 @@
 //   context-reseed the provider reports 40k prompt tokens (60% of the 48k budget is 28.8k): the next
 //                  fresh candidate seeds a replacement child whose first message is the reseed envelope
 //                  carrying the delivered path, followed by the wake for the new candidate.
+//   category-unavailable
+//                  only `omo-mock` is connected and the recall category keeps its builtin chain, so no
+//                  model inside the pinned category exists: every wake is refused. The refusals are a
+//                  permanent CONFIGURATION state, so the session gets exactly ONE
+//                  `omo-kibitzer:unavailable` notice, no `omo-kibitzer:gate` failure escalation however
+//                  many refusals pile up, and every wake record is non-diagnostic with the dead
+//                  category named.
 //
 // Every wait is an RPC event, a filesystem change or a process exit with a bounded timeout. Evidence
 // is structured: the mock's request log, the parent session JSONL and every child transcript.
@@ -38,9 +45,11 @@ import {
   decodeSidecarDirName,
   getState,
   installInterruptCleanup,
+  isGate,
   isNudged,
   isRecall,
   isSidecarRequest,
+  isUnavailable,
   launchRpc,
   leaseFiles,
   messageText,
@@ -60,12 +69,19 @@ import {
   teardown,
   toolCallsOf,
   waitForAccepted,
+  wakeRecords,
   watchUntil,
   writeEvidence,
   writeOmoConfig,
 } from "./kibitzer-sidecar-support.mjs"
 
-export const SCENARIOS = ["happy", "provider-429", "context-reseed"]
+export const SCENARIOS = ["happy", "provider-429", "context-reseed", "category-unavailable"]
+/** Scenario-specific omo config on top of the lane's defaults; `{}` categories kills the recall chain. */
+const CONFIG = { "category-unavailable": { categories: {} } }
+/** Refusals to observe before the absence of a gate notice is meaningful: the gate fires at three. */
+const REFUSALS_PROVING_NO_GATE = 3
+/** One parent turn is the only clock that ends a refusal's backoff band; the band opens at one second. */
+const MAX_REFUSAL_TURNS = 12
 /** The child backoff band starts at one second; each parent turn is the only clock that can end it. */
 const MAX_BACKOFF_TURNS = 8
 /** Longer than the first backoff band, so a turn that landed inside it is followed by one that does not. */
@@ -126,7 +142,7 @@ async function withHarness(scenario, options, run) {
     // The seed session's own provider turns never count as parent turns of the scenario.
     const seedRequests = router.state.parent
     facts.seed.parentRequests = seedRequests
-    writeOmoConfig(sandbox, { recallEnabled: true })
+    writeOmoConfig(sandbox, { recallEnabled: true, ...(CONFIG[scenario] ?? {}) })
     const session = launchRpc(command, sandbox, env)
     cleanup.add("rpc session", () => teardown(session))
     state = await getState(session)
@@ -334,7 +350,63 @@ async function runContextReseed({ session, state, identity, router, facts, paren
   }
 }
 
-const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed }
+// ---- category-unavailable ------------------------------------------------------------------------------------
+
+async function runCategoryUnavailable({ session, state, identity, router, facts, parentTurns, record }) {
+  const pending = pendingFile(identity, state.sessionId)
+  router.setParentSteps(Array.from({ length: MAX_REFUSAL_TURNS + 2 }, () => ({ type: "text", text: "Checking." })))
+  // The sidecar script is never consumed: no child can be started at all while the chain is dead.
+  router.setSidecarSteps([nudgeStep(MEMORIES.rollout)])
+
+  // Each parent turn offers a candidate; a refused wake backs off, so turns are the only clock that
+  // can produce the next refusal. Wake records are the refusal ledger.
+  const prompts = [MEMORIES.rollout.prompt, MEMORIES.helm.prompt]
+  let turns = 0
+  let records = []
+  while (turns < MAX_REFUSAL_TURNS && records.length < REFUSALS_PROVING_NO_GATE) {
+    await prompt(session, prompts[turns % prompts.length])
+    turns += 1
+    const lineage = sidecarDirs(identity)[0]
+    if (lineage === undefined) continue
+    records = await watchUntil(lineage.dir, () => {
+      const current = wakeRecords(lineage.dir)
+      return current.length > records.length ? current : undefined
+    }, { timeoutMs: BACKOFF_PROBE_MS, description: `category-unavailable refusal ${records.length + 1}` }).catch(() => wakeRecords(lineage.dir))
+  }
+  const lineage = sidecarDirs(identity)[0]
+  record("refusals-recorded", records.length >= REFUSALS_PROVING_NO_GATE, `refusals=${records.length} turns=${turns} lineages=${sidecarDirs(identity).length}`)
+  const configured = records.filter((entry) => entry.status === "failed" && entry.cause === "start_failed" && entry.diagnostic === false && entry.configuration?.category === "quick")
+  record("refusals-non-diagnostic", records.length > 0 && configured.length === records.length, `configuration=${JSON.stringify(records[0]?.configuration ?? null)} diagnostic=[${records.map((entry) => entry.diagnostic).join(",")}]`)
+  record("no-child-started", router.state.sidecar === 0 && (lineage === undefined || childTranscripts(lineage.dir).length === 0), `sidecarRequests=${router.state.sidecar} childTranscripts=${lineage === undefined ? 0 : childTranscripts(lineage.dir).length}`)
+
+  // One actionable notice for the whole session, and never the red failure escalation.
+  const entries = readEntries(state.sessionFile)
+  const notices = entries.filter(isUnavailable)
+  const notice = notices[0]?.data
+  record(
+    "one-unavailable-notice",
+    notices.length === 1 && notice?.version === 1 && notice?.category === "quick" && (notice?.cause === "category_unavailable" || notice?.cause === "beyond_category"),
+    `notices=${notices.length} data=${JSON.stringify(notice ?? null)}`,
+  )
+  record("no-gate-escalation", entries.filter(isGate).length === 0, `gateEntries=${entries.filter(isGate).length} refusals=${records.length}`)
+  record("nothing-delivered", entries.filter(isNudged).length === 0 && entries.filter(isRecall).length === 0 && !existsSync(pending), `nudged=${entries.filter(isNudged).length} recall=${entries.filter(isRecall).length} pending=${existsSync(pending)}`)
+  record("lease-released-after-refusal", leaseFiles(identity).length === 0, `leases=${leaseFiles(identity).length}`)
+  facts.result = {
+    resident: sidecarDirs(identity).length === 1,
+    childSessions: sidecarDirs(identity).length,
+    childGenerations: lineage === undefined ? 0 : childTranscripts(lineage.dir).length,
+    refusals: records.length,
+    refusalCause: records[0]?.configuration?.cause,
+    missingProviders: records[0]?.configuration?.missingProviders,
+    unavailableNotices: notices.length,
+    gateNotices: entries.filter(isGate).length,
+    nudged: 0,
+    sidecarRequests: router.state.sidecar,
+    parentRequests: parentTurns(),
+  }
+}
+
+const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed, "category-unavailable": runCategoryUnavailable }
 
 // ---- main --------------------------------------------------------------------------------------------------------
 

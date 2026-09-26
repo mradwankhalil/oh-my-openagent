@@ -88,6 +88,7 @@ describe("build:omo-native staged payload", () => {
             join("extensions", "kibitzer-persona.md"),
             join("runtime", "ast-grep-mcp", "cli.js"),
             join("runtime", "lsp-daemon", "dist", "cli.js"),
+            join("runtime", "category-coverage", "index.js"),
             join("scripts", "install.mjs"),
             "package.json",
           ]

@@ -4,6 +4,8 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { canonicalAgentDir } from "./agent-dir.js"
 import { packageManifest, packageRoot, readJson, resolveSenpi, updateTarget } from "./package-paths.js"
+import { daemonReportLines } from "./daemon.js"
+import { migrationReport } from "./doctor-migration.js"
 import { needsSetupSuggestion } from "./setup-detect.js"
 
 const NPM_DIST_TAGS_URL = "https://registry.npmjs.org/-/package/omo-ai/dist-tags"
@@ -112,9 +114,13 @@ function engineVersionOrUnresolved(senpi) {
 }
 
 // The interactive engine's own command line. A published install runs it as
-// `<runtime> .../@code-yeongyu/senpi/dist/cli.js --extension <plugin>`; every non-interactive
+// `<runtime> .../@code-yeongyu/senpi/dist/<entry> --extension <plugin>`; every non-interactive
 // spelling carries an explicit `--mode`, and those are owned by whoever started them.
-const ENGINE_MARKER = "senpi/dist/cli.js"
+//
+// Both entries have to match. The launcher prefers the engine's pre-linked bundle whenever the
+// package ships one (#8417), so a current install produces `dist/bundle/cli.js` and matching only
+// the unbundled spelling made the whole report blind to the sessions it exists to find.
+const ENGINE_MARKERS = ["senpi/dist/cli.js", "senpi/dist/bundle/cli.js"]
 const MANAGED_MODE_FLAG = "--mode"
 
 /**
@@ -142,7 +148,7 @@ function listProcesses() {
 }
 
 function isEngine(entry) {
-  return entry.command.includes(ENGINE_MARKER)
+  return ENGINE_MARKERS.some((marker) => entry.command.includes(marker))
 }
 
 function isInteractive(entry) {
@@ -363,6 +369,16 @@ function retiredPayloadReport(options) {
   return formatRetiredPayloadLines(classifyRetiredPayloadEngines(list(), { payloadMtimeMs, nowMs: now() }))
 }
 
+/** One line about the shared engine host; injected so tests never spawn the engine. */
+function daemonReport(options) {
+  if (options.daemonReport !== undefined) return options.daemonReport()
+  const engine = options.daemonEngine
+  if (engine === undefined) return []
+  return daemonReportLines({
+    engine, pluginRoot: join(packageRoot, "plugin"), agentDir: canonicalAgentDir(), env: process.env, platform: process.platform,
+  })
+}
+
 export function runDoctor(inventory, args = [], options = {}) {
   if (args[0] === "--reap") {
     const result = reapStaleEngines(args.slice(1), options)
@@ -412,10 +428,13 @@ export function runDoctor(inventory, args = [], options = {}) {
   const latest = latestFromDistTags(readDistTags(options), version)
   lines.push(`INFO omo · Edition: Native · Installed: ${version} (engine: senpi ${engineVersionOrUnresolved(senpi)}) · Latest: ${latest}`)
   lines.push(`INFO Update: ${updateTarget().command}`)
+  lines.push(...migrationReport(options, updateTarget().command))
   lines.push(...warningsForSettings())
   lines.push(...staleEngineReport(options))
   lines.push(...retiredPayloadReport(options))
   lines.push(...transientMemoryReport(options))
+  lines.push(...daemonReport(options))
+  lines.push(...(options.categoryCoverage ?? []))
   if (needsSetupSuggestion(inventory)) {
     lines.push("INFO no credentials found; run omo setup to review sibling stores")
   }

@@ -13,6 +13,7 @@ const canonical = "https://github.com/code-yeongyu/oh-my-openagent.git"
 // Replace only the expensive package/compiler boundary. Git, cache selection,
 // update decisions, installs and the installed launcher all run the real code.
 const compiler = `
+(async () => {
 const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
 const args = process.argv.slice(2), cwd = process.cwd();
 if (args[0]?.endsWith(path.join('script', 'build-omob.ts'))) {
@@ -24,7 +25,9 @@ if (args.includes(path.join('script', 'build-omo-binary.ts'))) {
  fs.appendFileSync(process.env.OMOB_TEST_BUILDS, 'compile\\n');
  if (process.env.OMOB_TEST_FAIL === '1') process.exit(23);
  const info = JSON.parse(args[args.indexOf('--build-info')+1]);
- const version = [info.command+' dev build', 'omo   '+info.omo.commit+' '+info.omo.committedAt+' ('+info.omo.branch+')', 'senpi '+info.engine.commit+' '+info.engine.committedAt+' ('+info.engine.branch+')'].join('\\n');
+ // The real \`--version\` text, from the production module: the refresh decides "same build" by
+ // comparing this output with versionLines(info), so a hand-copied format here would drift.
+ const version = require(process.env.OMOB_TEST_BUILD_INFO).versionLines(info).join('\\n');
  const out = args[args.indexOf('--out-dir')+1], target = args[args.indexOf('--target')+1];
  fs.mkdirSync(out,{recursive:true});
  const binary = path.join(out,'omo-'+target+(target.startsWith('windows-')?'.exe':''));
@@ -34,7 +37,9 @@ if (args.includes(path.join('script', 'build-omo-binary.ts'))) {
  if (result.error) throw result.error;
  if (result.status !== 0) process.exit(result.status ?? 1);
 } else if (args[0] === 'pm') {
- fs.writeFileSync(path.join(args[args.indexOf('--destination')+1],'senpi.tgz'),'fixture');
+ await Bun.write(path.join(args[args.indexOf('--destination')+1],'senpi.tgz'), new Bun.Archive({
+  'package/package.json': JSON.stringify({name:'@code-yeongyu/senpi',version:'0.0.0-fixture',bundleDependencies:[]}),
+ }, {compress:'gzip'}));
 } else if (args[0] === 'install') {
  fs.mkdirSync(path.join(cwd,'node_modules'),{recursive:true});
  if (path.basename(cwd)==='senpi-install') {
@@ -42,13 +47,14 @@ if (args.includes(path.join('script', 'build-omo-binary.ts'))) {
   fs.mkdirSync(pkg,{recursive:true}); fs.writeFileSync(path.join(pkg,'package.json'),'{}');
  }
 }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 `
 
 function fixture() {
 	const root = mkdtempSync(join(tmpdir(), "omob-refresh-"))
 	const omo = join(root, "upstream-omo"), senpi = join(root, "upstream-senpi")
 	const cache = join(root, "cache"), tools = join(root, "tools"), builds = join(root, "builds")
-	const env = { ...process.env, PATH: `${tools}${delimiter}${process.env.PATH}`, OMOB_TEST_BUN: process.execPath, OMOB_TEST_BUILDER: builder, OMOB_TEST_BUILDS: builds,
+	const env = { ...process.env, PATH: `${tools}${delimiter}${process.env.PATH}`, OMOB_TEST_BUN: process.execPath, OMOB_TEST_BUILDER: builder, OMOB_TEST_BUILDS: builds, OMOB_TEST_BUILD_INFO: resolve(import.meta.dir, "../packages/omo-native/build-info.ts"),
 		GIT_CONFIG_COUNT: "5", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "Test", GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "test@example.com",
 		GIT_CONFIG_KEY_2: `url.${pathToFileURL(omo).href}.insteadOf`, GIT_CONFIG_VALUE_2: canonical, GIT_CONFIG_KEY_3: "protocol.file.allow", GIT_CONFIG_VALUE_3: "always", GIT_CONFIG_KEY_4: `url.${pathToFileURL(senpi).href}.insteadOf`, GIT_CONFIG_VALUE_4: "https://github.com/code-yeongyu/senpi.git" }
 	const git = (cwd: string, args: string[]) => {

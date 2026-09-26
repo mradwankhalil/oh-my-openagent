@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import {
   embeddedText,
@@ -15,13 +14,15 @@ import {
   type EmbeddedManifest,
 } from "./compile-runtime"
 import { propagateResult, runChild } from "./bin/lib/child-process.js"
-import { buildLabel, parseBuildInfo, versionLines } from "./build-info"
+import { buildLabel, parseBuildInfo, parseEngineBuildStamp, versionLines } from "./build-info"
 import { migrateLegacyBunGlobalManifest } from "./bin/lib/legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./bin/lib/agent-dir.js"
 import { nearestNodeBin, readJson } from "./bin/lib/package-paths.js"
+import { daemonReportLines, runDaemonCommand } from "./bin/lib/daemon.js"
 import { runDoctor } from "./bin/lib/doctor.js"
 import { detectHarnesses, needsSetupSuggestion } from "./bin/lib/setup-detect.js"
 import { printSetupReport } from "./bin/lib/setup-report.js"
+import { spawnSync } from "node:child_process"
 import { delimiter } from "node:path"
 import { registerBunOAuthFlows } from "../../node_modules/@code-yeongyu/senpi/node_modules/@earendil-works/pi-ai/dist/bun-oauth.js"
 
@@ -41,7 +42,7 @@ registerBunOAuthFlows()
 //    $bunfs. Do NOT refactor these two literals into an indirection.
 // Probe receipts: .omo/evidence/20260825-bun-compile-release-binaries/
 
-const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server"])
+const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server", "host"])
 const selfUpdateTargets = new Set(["self", "senpi", "omo"])
 const engineUpdateTargets = new Set(["--extensions", "--models"])
 const doctorArtifacts = [
@@ -60,10 +61,17 @@ export function buildSenpiArgs(args: string[], execDir: string): string[] {
   return ["--extension", join(execDir, "plugin"), ...args]
 }
 
-export function versionLine(packageJson: { version: string; omoBuild?: unknown }, enginePin: string): string {
+export function versionLine(
+  packageJson: { version: string; omoBuild?: unknown; engineBuild?: unknown },
+  enginePin: string,
+): string {
   const info = parseBuildInfo(packageJson.omoBuild)
   if (info !== undefined) return versionLines(info).join("\n")
-  return `omo ${packageJson.version} (engine: senpi ${enginePin})`
+  const stamp = parseEngineBuildStamp(packageJson.engineBuild)
+  if (stamp?.scheme === "epoch") {
+    return `omo ${packageJson.version} (engine: senpi ${enginePin}+${stamp.epoch}.${stamp.sha7}; scheme epoch)`
+  }
+  return `omo ${packageJson.version} (engine: senpi ${enginePin}; scheme nodef)`
 }
 
 export function updateAssetSlug(platform: NodeJS.Platform, arch: string): string {
@@ -137,7 +145,9 @@ export function remapSenpiEnvironment(source: NodeJS.ProcessEnv = process.env, e
   return env
 }
 
-function runCompiledDoctor(inventory: Awaited<ReturnType<typeof detectHarnesses>>, execDir: string, enginePin: string): void {
+type DaemonEngine = { run(args: string[], options: { env: Record<string, string | undefined> }): { exitCode: number; stdout: string; stderr: string } }
+
+function runCompiledDoctor(inventory: Awaited<ReturnType<typeof detectHarnesses>>, execDir: string, enginePin: string, engine?: DaemonEngine): void {
   let failed = false
   const lines: string[] = []
   for (const [label, artifact] of doctorArtifacts) {
@@ -149,6 +159,9 @@ function runCompiledDoctor(inventory: Awaited<ReturnType<typeof detectHarnesses>
   }
   const packageJson = readJson(join(execDir, "package.json"))
   for (const line of versionLine(packageJson, enginePin).split("\n")) lines.push(`INFO ${line}`)
+  if (engine !== undefined) {
+    lines.push(...daemonReportLines({ engine, pluginRoot: join(execDir, "plugin"), agentDir: canonicalAgentDir(), env: process.env, platform: process.platform }))
+  }
   if (needsSetupSuggestion(inventory)) lines.push("INFO no credentials found; run omo setup to review sibling stores")
   console.log(lines.join("\n"))
   process.exitCode = failed ? 1 : 0
@@ -162,9 +175,16 @@ function isSelfUpdate(args: string[]): boolean {
   return rest.every((arg) => arg.startsWith("-") || selfUpdateTargets.has(arg))
 }
 
-export function answerCompiledFastPath(args: string[], manifest: Pick<EmbeddedManifest, "omoAiVersion" | "enginePin" | "buildInfo">): boolean {
+export function answerCompiledFastPath(
+  args: string[],
+  manifest: Pick<EmbeddedManifest, "omoAiVersion" | "enginePin" | "buildInfo" | "engineBuild">,
+): boolean {
   if ((args[0] === "--version" || args[0] === "-v") && args.length === 1) {
-    console.log(versionLine({ version: manifest.omoAiVersion, omoBuild: manifest.buildInfo }, manifest.enginePin))
+    console.log(versionLine({
+      version: manifest.omoAiVersion,
+      omoBuild: manifest.buildInfo,
+      engineBuild: manifest.engineBuild,
+    }, manifest.enginePin))
     return true
   }
   if (isSelfUpdate(args)) {
@@ -207,16 +227,69 @@ export async function runCompiledLauncher(args: string[], execDir: string, engin
     process.exitCode = 2
     return true
   }
+  // The compiled binary IS the engine's process, so the host CLI is reached by re-running this
+  // executable with `host ...` - an early command that goes to the engine untouched. Spawning a
+  // node path here would re-enter omo itself and leave a phantom session behind.
+  const engine = {
+    run(engineArgs: string[], options: { env: Record<string, string | undefined> }) {
+      const result = spawnSync(process.execPath, engineArgs, { encoding: "utf8", env: options.env, windowsHide: true })
+      return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
+    },
+  }
+  if (command === "daemon") {
+    const outcome = runDaemonCommand(args.slice(1), {
+      engine,
+      pluginRoot: join(execDir, "plugin"),
+      agentDir: canonicalAgentDir(),
+      env: process.env,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      platform: process.platform,
+    })
+    if (typeof outcome === "object") {
+      // A reachable daemon: continue as a normal launch pointed at the shared socket.
+      process.argv.splice(2, process.argv.length - 2, ...outcome.args)
+      Object.assign(process.env, outcome.env)
+      return false
+    }
+    process.exitCode = outcome
+    return true
+  }
   if (command === "doctor") {
     const inventory = await detectHarnesses()
-    if (compiledPackageRoot) runCompiledDoctor(inventory, compiledPackageRoot, enginePin)
-    else runDoctor(inventory)
+    if (compiledPackageRoot) runCompiledDoctor(inventory, compiledPackageRoot, enginePin, engine)
+    else runDoctor(inventory, [], { daemonEngine: engine })
     return true
   }
   if (command === "setup") { printSetupReport(await detectHarnesses()); process.exitCode = 0; return true }
   if ((command === "--version" || command === "-v") && args.length === 1) { console.log(versionLine(packageJson, enginePin ?? "unknown")); return true }
   if (isSelfUpdate(args)) { console.log(updateHint(packageJson.omoBuild)); return true }
   return false
+}
+
+export async function reexecProvisionedRuntime(expected: string, options: {
+  argv?: string[]
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  execve?: ((file: string, argv: string[], env: NodeJS.ProcessEnv) => void) | null
+  run?: typeof runChild
+  propagate?: typeof propagateResult
+} = {}): Promise<void> {
+  const argv = options.argv ?? process.argv.slice(2)
+  const env = options.env ?? process.env
+  const run = options.run ?? runChild
+  const propagate = options.propagate ?? propagateResult
+  const execve = options.execve === undefined ? process.execve : options.execve
+  if ((options.platform ?? process.platform) !== "win32" && typeof execve === "function") {
+    try {
+      execve(expected, [expected, ...argv], env)
+      return
+    } catch {
+      // A provisioned binary that cannot replace this image still uses the async fallback.
+    }
+  }
+  const result = await run(expected, argv, { env })
+  propagate(result)
 }
 
 async function main(): Promise<void> {
@@ -248,8 +321,7 @@ async function main(): Promise<void> {
   if (answerCompiledFastPath(process.argv.slice(2), manifest)) return
   if (needsProvisioning) {
     if (shouldReexecAfterProvisioning()) {
-      const result = await runChild(expected, process.argv.slice(2), { env: process.env })
-      propagateResult(result)
+      await reexecProvisionedRuntime(expected)
       return
     }
     execDir = dirname(expected)

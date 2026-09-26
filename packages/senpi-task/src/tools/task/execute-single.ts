@@ -117,10 +117,13 @@ export async function runSpawn(
   if (started.kind === "residency_denied") {
     return result(started.reason, { task_id: "", status: "residency_denied", mode: "spawn", reason: started.reason })
   }
+  // What the started child actually runs as. The spec names no mode only when omo.json says `auto`
+  // and this wiring has no daemon gate at all, which IS in-process.
+  const executionMode = spec.execution_mode ?? "in-process"
   if (params.run_in_background === true) {
     return result(
       appendMissingSkills(backgroundStartText(started, startLabels), spec.skills),
-      startedDetails(started, params, spec.execution_mode, spec.skills),
+      startedDetails(started, params, executionMode, spec.skills),
     )
   }
 
@@ -147,7 +150,7 @@ export async function runSpawn(
     emittedAt = Date.now()
     onUpdate({
       content: [{ type: "text", text: progress.contentText() }],
-      details: partialDetails(started, params, spec.execution_mode, progress.details(), spec.skills),
+      details: partialDetails(started, params, executionMode, progress.details(), spec.skills),
     })
   }
   const schedule = (): void => {
@@ -174,7 +177,7 @@ export async function runSpawn(
   if (started.status === "pending") {
     onUpdate?.({
       content: [{ type: "text", text: "" }],
-      details: partialDetails(started, params, spec.execution_mode, {
+      details: partialDetails(started, params, executionMode, {
         progress: { activity: "queued · waiting for slot", startedAt },
         childId: started.task_id,
         turns: 0,
@@ -183,6 +186,9 @@ export async function runSpawn(
   } else {
     emit()
   }
+  const parent = deps.manager.findTaskByChildSession?.(ctx.sessionManager.getSessionId())
+  const parked = parent === undefined ? undefined : deps.manager.concurrency?.park(parent.task_id, parent.notification.run_epoch)
+  let promoted = false
   try {
     const waited = await waitForForegroundTask({
       manager: deps.manager,
@@ -193,11 +199,12 @@ export async function runSpawn(
       ...(scheduleDeadline !== undefined && { scheduleDeadline }),
     })
     if (waited.kind === "promoted") {
+      promoted = true
       return result(appendMissingSkills(
         backgroundConversionText(started, startLabels, waited.budgetSeconds),
         spec.skills,
       ), {
-        ...startedDetails(started, params, spec.execution_mode, spec.skills),
+        ...startedDetails(started, params, executionMode, spec.skills),
         run_in_background: true,
       })
     }
@@ -212,7 +219,7 @@ export async function runSpawn(
     const reason = "parent turn aborted"
     await deps.manager.cancelTask(started.task_id, reason)
     return result(`Task ${started.task_id} cancelled: ${reason}.${continuationFooter(started.task_id)}`, {
-      ...startedDetails(started, params, spec.execution_mode, spec.skills),
+      ...startedDetails(started, params, executionMode, spec.skills),
       status: "cancelled",
       reason,
     })
@@ -220,5 +227,6 @@ export async function runSpawn(
     closed = true
     if (timer !== undefined) clearTimeout(timer)
     unsubscribe()
+    await deps.manager.concurrency?.unpark(parked, signal, { overflow: promoted })
   }
 }

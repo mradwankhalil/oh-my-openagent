@@ -1,5 +1,6 @@
 import { resolveContext } from "./context"
 import { destroyResidentTask } from "./destroy"
+import { parkHostSessionOnDaemonLoss, type HostSessionParkOptions } from "./host-session-revive"
 import { registerLifecycleDetachedRevival, registerLifecycleDetachedRevivalRollback, type DestroyCause, type LifecycleDeps } from "./port"
 import { admitResident, reclaimIdleResidents, startIdleResidentReclaimer } from "./residency"
 import { reconcileOnSessionStart } from "./reconcile"
@@ -31,6 +32,8 @@ export function createTaskLifecycle(deps: LifecycleDeps): TaskLifecycle {
     },
     admitResident: (parentSessionId: string) => admitResident(context, parentSessionId),
     reconcileOnSessionStart: (parentSessionId?: string) => reconcileOnSessionStart(context, parentSessionId),
+    parkHostSessionOnDaemonLoss: (taskId: string, options?: HostSessionParkOptions) =>
+      parkHostSessionOnDaemonLoss(context, taskId, options),
     cleanupExpiredRecords: cleanup,
     suspendOnSessionShutdown: (input: SuspendInput) => suspendOnSessionShutdown(context, input),
   }

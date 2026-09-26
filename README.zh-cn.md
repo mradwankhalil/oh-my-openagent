@@ -7,18 +7,8 @@
 
 > **Sponsors**
 > 以下是我们的赞助商,支持着这个个人副业项目的持续开发。
-> | [<img alt="OpenGateway" src="./.github/assets/opengateway-logo.svg" width="156px" />](https://opengateway.ai/) | **[OpenGateway](https://opengateway.ai/)** 以与官方定价相同的价格提供 **300 TPS 的 Kimi K3 Ultrafast**。立即试用 `opengateway/moonshotai/kimi-k3-ultrafast`。 对推理原文实行无日志政策,让注重隐私的使用成为可能;同时由于不直接向提供商发起请求,还能保持匿名。 |
+> | [<img alt="OpenGateway" src="./.github/assets/opengateway-logo.svg" width="156px" />](https://opengateway.ai/) | **[OpenGateway](https://opengateway.ai/)** 赞助了 OmO。它是一个兼容 OpenAI 的网关,通过一个 API 即可使用多家模型提供商。感谢对开源的支持。 |
 > | :-----| :----- |
-
-> [!NOTE]
-> **OmO for Codex 已发布。试试 LazyCodex**
->
-> 因为太爱 Anthropic 模型而被封禁之后，我们决定站到 Codex 这一边。
-> 如果你是 OmO 粉丝，但觉得配置太麻烦，请使用 LazyCodex。OmO for Codex 已经发布:
-> ```bash
-> npx lazycodex-ai install
-> ```
-> 了解更多请访问 [lazycodex.ai](https://lazycodex.ai)。
 
 > [!NOTE]
 > **正在进行多 Harness 代理操作系统重构**
@@ -133,11 +123,11 @@ curl -fsSL https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/refs/h
 
 **注意**：已发布的 npm 包名和 CLI 二进制名仍然是 `oh-my-opencode`（过渡期间同时以 `oh-my-openagent` 的名字双重发布）。在 `opencode.json` 中，兼容性层现在优先使用插件入口 `oh-my-openagent`，而旧的 `oh-my-opencode` 条目仍会以警告的形式加载。运行时配置是 `~/.omo/omo.jsonc`，加上向上逐级查找的项目 `.omo/omo.jsonc`。旧版 `oh-my-openagent.json[c]` / `oh-my-opencode.json[c]` 文件只会被迁移引擎导入一次，之后不再被读取。
 
-推荐的 `bunx`/`npx` 调用方式是 `oh-my-openagent install`（或原来的 `oh-my-opencode install`）。安装完成后，短命令是 `omo-agent-toolkit`。这些包在本次大版本中移除了 `omo` bin，这个名字现在归 senpi 原生版本所有，通过 `bun add -g omo-ai@beta` 安装（仅 beta 通道）。**不要**使用 `bunx omo` 或 `npx omo`：npm 上的 `omo` 是另一位作者的无关包，这两条命令会解析到它。senpi 版本的包名是 `omo-ai`。`lazycodex-ai` 是一个单一用途的 Node/npm 安装器包：`npx lazycodex-ai install` 会直接进入 Codex Light 安装器。它不是 Codex marketplace 的名字（marketplace 仓库是 `code-yeongyu/lazycodex`）。Codex 看到的是 marketplace `sisyphuslabs` 和插件 `omo`，以 `omo@sisyphuslabs` 启用。
+推荐的 `bunx`/`npx` 调用方式是 `oh-my-openagent install`（或原来的 `oh-my-opencode install`）。安装完成后，短命令是 `omo-agent-toolkit`。这些包在本次大版本中移除了 `omo` bin，这个名字现在归 OmO Native 所有，通过 `bun add -g omo-ai@beta` 安装（仅 beta 通道）。**不要**使用 `bunx omo` 或 `npx omo`：npm 上的 `omo` 是另一位作者的无关包，这两条命令会解析到它。OmO Native 的包名是 `omo-ai`。`lazycodex-ai` 是一个单一用途的 Node/npm 安装器包：`npx lazycodex-ai install` 会直接进入 Codex Light 安装器。它不是 Codex marketplace 的名字（marketplace 仓库是 `code-yeongyu/lazycodex`）。Codex 看到的是 marketplace `sisyphuslabs` 和插件 `omo`，以 `omo@sisyphuslabs` 启用。
 
 匿名遥测默认开启，用于统计活跃安装数(DAU/WAU/MAU)。每台机器每个 UTC 日最多发送一次事件,使用哈希化的安装标识符,绝不会使用原始主机名,且不会创建 PostHog person profile。可通过 `OMO_SEND_ANONYMOUS_TELEMETRY=0` 或 `OMO_DISABLE_POSTHOG=1` 禁用。详见 [隐私政策](docs/legal/privacy-policy.md) 和 [服务条款](docs/legal/terms-of-service.md)。
 
-**Ultimate、Light 与 Senpi:** oh-my-openagent 以同一产品的三个版本发布：两个插件加载到你已经在用的宿主里，另有一个独立版本。**Ultimate 版本**（`bunx oh-my-openagent install` 或 `--platform=opencode`，默认值）在 OpenCode 上提供完整功能 —— 11 个智能体、54+ 个生命周期钩子、Team Mode、4 个内置 MCP（websearch、context7、grep_app、lsp）、所有斜杠命令、IntentGate 模式。**Light 版本**（`npx lazycodex-ai install`）提供能够干净地移植到 OpenAI Codex CLI 插件系统的 核心组件（`rules`、`comment-checker`、`git-bash`、`lsp`、`ultrawork`、`ulw-loop`、`ulw-execute-continuation`、`telemetry`），外加 `teammode` 和配套组件（`bootstrap`、`lcx` 等），并会把 Codex 智能体 TOML 安装到 `~/.codex/agents/`。要同时安装这两个插件版本，使用 `--platform=both`。**Senpi 版本（独立，beta）** 是内建 OMO 扩展的原生 `omo` 命令：`bun add -g omo-ai@beta`，然后运行 `omo`。它从 `omo-ai@beta` 安装，不加载进 OpenCode 或 Codex；仅提供 beta 通道，直接 `bun add -g omo-ai` 会按设计失败。Codex 专用遥测可通过 `OMO_CODEX_DISABLE_POSTHOG=1` 或 `OMO_CODEX_SEND_ANONYMOUS_TELEMETRY=0` 禁用。
+**Ultimate、Light 与 OmO Native:** oh-my-openagent 以同一产品的三个版本发布：两个插件加载到你已经在用的宿主里，另有一个独立版本。**Ultimate 版本**（`bunx oh-my-openagent install` 或 `--platform=opencode`，默认值）在 OpenCode 上提供完整功能 —— 11 个智能体、54+ 个生命周期钩子、Team Mode、4 个内置 MCP（websearch、context7、grep_app、lsp）、所有斜杠命令、IntentGate 模式。**Light 版本**（`npx lazycodex-ai install`）提供能够干净地移植到 OpenAI Codex CLI 插件系统的 核心组件（`rules`、`comment-checker`、`git-bash`、`lsp`、`ultrawork`、`ulw-loop`、`ulw-execute-continuation`、`telemetry`），外加 `teammode` 和配套组件（`bootstrap`、`lcx` 等），并会把 Codex 智能体 TOML 安装到 `~/.codex/agents/`。要同时安装这两个插件版本，使用 `--platform=both`。**OmO Native（独立，beta）** 是内建 OMO 扩展的 `omo` 命令：`bun add -g omo-ai@beta`，然后运行 `omo`。它从 `omo-ai@beta` 安装，不加载进 OpenCode 或 Codex；仅提供 beta 通道，直接 `bun add -g omo-ai` 会按设计失败。从 OpenCode 版本迁移请参阅 [Migrating from OpenCode](docs/guide/migrating-from-opencode.md)。Codex 专用遥测可通过 `OMO_CODEX_DISABLE_POSTHOG=1` 或 `OMO_CODEX_SEND_ANONYMOUS_TELEMETRY=0` 禁用。
 
 ---
 

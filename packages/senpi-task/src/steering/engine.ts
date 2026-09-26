@@ -71,7 +71,17 @@ export function createSteeringEngine(port: SteeringPort): SteeringEngine {
 
     if (coldRevivals.has(record.task_id)) return { kind: "admission_refused", task_id: record.task_id, reason: "revival_in_progress" }
     const cold = isColdRevivalCandidate(record)
-    const mode = messageability(record.status, record.residency_state, record.execution_mode, record.killed)
+    // Daemon-hosted children are read with their host identity: a PARKED session whose daemon still
+    // answers is reachable (reopened from its transcript, then delivered to), never `not_continuable`.
+    const mode = messageability(
+      record.status,
+      record.residency_state,
+      record.execution_mode,
+      record.killed,
+      record.runner_kind,
+      record.host_session,
+      port.isDaemonReachable,
+    )
     if (!cold && mode === "not-continuable") {
       return { kind: "not_continuable", task_id: record.task_id, reason: notContinuableReason(record), suggestion: TASK_OUTPUT_SUGGESTION }
     }

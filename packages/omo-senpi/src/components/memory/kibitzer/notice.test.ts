@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { CustomEntry } from "@code-yeongyu/senpi"
 
 import { Theme } from "../../../senpi-test-runtime"
-import { renderKibitzerGateEntry, renderKibitzerNudgedEntry, type KibitzerGateRecord } from "./notice"
+import { renderKibitzerGateEntry, renderKibitzerNudgedEntry, renderKibitzerUnavailableEntry, type KibitzerGateRecord, type KibitzerUnavailableRecord } from "./notice"
 
 const TEST_FG_COLORS = {
   accent: "#000000", bashMode: "#000000", border: "#000000", borderAccent: "#000000", borderMuted: "#000000",
@@ -139,5 +139,64 @@ describe("kibitzer nudged recollection", () => {
     expect(renderKibitzerNudgedEntry(entry(record), { expanded: true }, theme)?.render(120).join("\n")).toContain(
       "it is a hint, not current state",
     )
+  })
+})
+
+describe("kibitzer unavailable notice", () => {
+  test("#given a dead-chain record #when rendered #then a non-error notice names the category, the unconnected providers and both fixes", () => {
+    const record: KibitzerUnavailableRecord = {
+      version: 1,
+      category: "quick",
+      cause: "category_unavailable",
+      missingProviders: ["chatgpt-subscription", "openai"],
+    }
+    const rendered = renderKibitzerUnavailableEntry(entry(record), { expanded: false }, theme)?.render(120).join("\n")
+    expect(rendered).toContain("⚠")
+    expect(rendered).toContain("quick")
+    expect(rendered).toContain("chatgpt-subscription")
+    expect(rendered).toContain("/login")
+    expect(rendered).toContain("memory.recall.category")
+    expect(rendered).toContain("categories.quick.model")
+    // Not a failure escalation: no gate framing, no streak language.
+    expect(rendered).not.toContain("gate failed")
+    expect(rendered).not.toContain("consecutive failures")
+  })
+
+  test("#given a beyond-category record #when rendered #then the notice explains the pinning refusal and points at the config fix", () => {
+    const record: KibitzerUnavailableRecord = { version: 1, category: "quick", cause: "beyond_category" }
+    const rendered = renderKibitzerUnavailableEntry(entry(record), { expanded: false }, theme)?.render(120).join("\n")
+    expect(rendered).toContain("⚠")
+    expect(rendered).toContain("quick")
+    expect(rendered).toContain("memory.recall.category")
+  })
+
+  test("#given a beyond-category record carrying the chain's providers #when rendered #then the /login fix names them", () => {
+    const record: KibitzerUnavailableRecord = { version: 1, category: "quick", cause: "beyond_category", missingProviders: ["kimi-coding", "chatgpt-subscription"] }
+    const rendered = renderKibitzerUnavailableEntry(entry(record), { expanded: false }, theme)?.render(120).join("\n")
+    expect(rendered).toContain("kimi-coding")
+    expect(rendered).toContain("/login")
+  })
+
+  test("#given a malformed stored record #when rendered #then nothing is drawn", () => {
+    for (const data of [
+      undefined,
+      null,
+      "quick",
+      { version: 2, category: "quick", cause: "category_unavailable" },
+      { version: 1, cause: "category_unavailable" },
+      { version: 1, category: "", cause: "category_unavailable" },
+      { version: 1, category: "quick", cause: "start_failed" },
+      { version: 1, category: "quick", cause: "category_unavailable", missingProviders: "openai" },
+    ]) {
+      expect(renderKibitzerUnavailableEntry(entry(data), { expanded: false }, theme)).toBeUndefined()
+    }
+  })
+
+  test("#given a stored record with overlong fields #when rendered #then the fields are bounded", () => {
+    const record = { version: 1, category: "x".repeat(200), cause: "category_unavailable", missingProviders: ["p".repeat(200)] }
+    const rendered = renderKibitzerUnavailableEntry(entry(record), { expanded: false }, theme)?.render(120).join("\n")
+    expect(rendered).toBeDefined()
+    expect(rendered).not.toContain("x".repeat(200))
+    expect(rendered).not.toContain("p".repeat(200))
   })
 })

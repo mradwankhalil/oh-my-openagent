@@ -255,9 +255,11 @@ jobs:
           fi
           BIN=".omo/release-binaries/omo-${TARGET}${EXE_SUFFIX}"
           ENGINE_PIN="$(jq -r '.dependencies["@code-yeongyu/senpi"]' packages/omo-native/package.json)"
-          # Exact stamped version line: a missing sibling package.json silently
-          # stamps 0.0.0, so the full string including the engine pin is compared.
-          EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN})"
+          # Stamped version line, compared as a prefix: a missing sibling package.json
+          # silently stamps 0.0.0, so the version and the engine pin are both compared.
+          # The line continues past the pin with the engine build stamp (`; scheme epoch`
+          # or `; scheme nodef`), which varies per build and is not pinned here.
+          EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN}"
           test -f "$BIN"
 
           isolate() {
@@ -281,10 +283,13 @@ jobs:
           assert_version_line() {
             local actual
             actual="$($BIN --version)"
-            if [ "$actual" != "$EXPECTED_VERSION_LINE" ]; then
-              echo "version mismatch for ${TARGET}: expected '${EXPECTED_VERSION_LINE}', got '${actual}'"
-              return 1
-            fi
+            case "$actual" in
+              "${EXPECTED_VERSION_LINE}"*")") ;;
+              *)
+                echo "version mismatch for ${TARGET}: expected '${EXPECTED_VERSION_LINE}...)', got '${actual}'"
+                return 1
+                ;;
+            esac
           }
 
           assert_first_run_provisioned() {
@@ -636,7 +641,9 @@ jobs:
         run: |
           set -euo pipefail
           ENGINE_PIN="$(jq -r '.dependencies["@code-yeongyu/senpi"]' packages/omo-native/package.json)"
-          EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN})"
+          # Prefix through the engine pin; the line continues with the engine build
+          # stamp (`; scheme epoch` or `; scheme nodef`), which varies per build.
+          EXPECTED_VERSION_LINE="omo ${OMO_AI_VERSION} (engine: senpi ${ENGINE_PIN}"
 
           isolate() {
             SMOKE_ROOT="$(mktemp -d)"
@@ -656,10 +663,13 @@ jobs:
             chmod +x .omo/release-binaries/omo-linux-arm64
             isolate
             actual="$(.omo/release-binaries/omo-linux-arm64 --version)"
-            if [ "$actual" != "$EXPECTED_VERSION_LINE" ]; then
-              echo "version mismatch for omo-linux-arm64: expected '${EXPECTED_VERSION_LINE}', got '${actual}'"
-              exit 1
-            fi
+            case "$actual" in
+              "${EXPECTED_VERSION_LINE}"*")") ;;
+              *)
+                echo "version mismatch for omo-linux-arm64: expected '${EXPECTED_VERSION_LINE}...)', got '${actual}'"
+                exit 1
+                ;;
+            esac
             test -f "${HOME}/.omo/binary-runtime/${OMO_AI_VERSION}/omo"
           fi
 

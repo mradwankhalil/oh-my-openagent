@@ -8,11 +8,16 @@ import {
 import { parseTaskId } from "../state/id"
 import {
   parseNotification,
+  parseOptionalIsolation,
+  parseOptionalHostSession,
   parseOptionalOwner,
   parseOptionalPendingSteering,
   parseOptionalResolvedModel,
   parseOptionalResolvedModelArray,
   parseOptionalSpawnSpec,
+  readOptionalRunnerKind,
+  readOptionalSuspensionReason,
+  validateHostSessionConsistency,
 } from "./record-blocks-parse"
 import { parseRunStats } from "./run-stats-parse"
 import {
@@ -48,6 +53,7 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
   const hostPid = readOptionalNumber(value, "host_pid")
   const childSessionId = readOptionalString(value, "child_session_id")
   const finalResponse = readOptionalString(value, "final_response")
+  const isolation = parseOptionalIsolation(value)
   const errorMessage = readOptionalString(value, "error_message")
   const startedAt = readOptionalString(value, "started_at")
   const terminalAt = readOptionalString(value, "terminal_at")
@@ -66,6 +72,10 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
   const configGeneration = readOptionalNumber(value, "config_generation")
   const backgroundMode = readOptionalBackgroundMode(value)
   const reviveDeliveryUncertain = parseOptionalReviveDeliveryUncertainty(value)
+  const runnerKind = readOptionalRunnerKind(value)
+  const suspensionReason = readOptionalSuspensionReason(value)
+  const hostSession = parseOptionalHostSession(value)
+  validateHostSessionConsistency(runnerKind, hostSession)
 
   return {
     task_id: parseTaskId(readString(value, "task_id")),
@@ -106,6 +116,7 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
     ...(hostPid === undefined ? {} : { host_pid: hostPid }),
     ...(childSessionId === undefined ? {} : { child_session_id: childSessionId }),
     ...(finalResponse === undefined ? {} : { final_response: finalResponse }),
+    ...(isolation === undefined ? {} : { isolation }),
     ...(errorMessage === undefined ? {} : { error_message: errorMessage }),
     ...(killed === undefined ? {} : { killed }),
     ...(runStats === undefined ? {} : { run_stats: runStats }),
@@ -113,6 +124,9 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
     ...(configGeneration === undefined ? {} : { config_generation: configGeneration }),
     ...(backgroundMode === undefined ? {} : { background_mode: backgroundMode }),
     ...(reviveDeliveryUncertain === undefined ? {} : { revive_delivery_uncertain: reviveDeliveryUncertain }),
+    ...(suspensionReason === undefined ? {} : { suspension_reason: suspensionReason }),
+    ...(runnerKind === undefined ? {} : { runner_kind: runnerKind }),
+    ...(hostSession === undefined ? {} : { host_session: hostSession }),
   }
 }
 

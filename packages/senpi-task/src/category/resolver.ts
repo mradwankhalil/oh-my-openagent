@@ -2,11 +2,12 @@ import {
   resolveModelForDelegateTask,
   type DelegateFallbackEntry,
 } from "@oh-my-opencode/delegate-core"
-import type {
-  OmoCategoryConfig,
-  OmoConfig,
-  OmoFallbackModelObject,
-  OmoFallbackModels,
+import {
+  canonicalCategoryName,
+  type OmoCategoryConfig,
+  type OmoConfig,
+  type OmoFallbackModelObject,
+  type OmoFallbackModels,
 } from "@oh-my-opencode/omo-config-core"
 
 import {
@@ -208,7 +209,7 @@ export function resolveAvailableCategoryNames<TModel extends SenpiModelPort>(
 }
 
 // Chain providers with no model in the live registry, in chain order, deduplicated.
-function missingChainProviders(
+export function missingChainProviders(
   chain: readonly DelegateFallbackEntry[],
   availableModels: readonly string[],
 ): readonly string[] {
@@ -250,7 +251,7 @@ function getOwnRecordValue<TValue>(
   return Object.hasOwn(record, key) ? record[key] : undefined
 }
 
-function parseAvailableModels(models: unknown): AvailableModelsParseResult {
+export function parseAvailableModels(models: unknown): AvailableModelsParseResult {
   if (!Array.isArray(models)) {
     return { models: [], validContainer: false }
   }
@@ -285,13 +286,19 @@ function modelSelection(input: ModelSelectionInput): CategoryModelSelection {
 }
 
 export function resolveCategory<TModel extends SenpiModelPort>(
-  categoryName: string,
+  requestedCategoryName: string,
   omoConfig: OmoConfig,
   senpiModelRegistry: SenpiModelRegistryPort<TModel>,
   options: ResolveCategoryOptions = {},
 ): CategoryResolutionResult<TModel> {
+  // A retired builtin name resolves to its replacement so third-party skills and AGENTS.md text
+  // spawning the old category keep working; a user category of that name still wins over the alias.
+  const userCategories = omoConfig.categories
+  const categoryName = userCategories !== undefined && Object.hasOwn(userCategories, requestedCategoryName)
+    ? requestedCategoryName
+    : canonicalCategoryName(requestedCategoryName)
   const availableCategories = availableCategoryNames(omoConfig)
-  const userConfig = omoConfig.categories ? getOwnRecordValue(omoConfig.categories, categoryName) : undefined
+  const userConfig = userCategories ? getOwnRecordValue(userCategories, categoryName) : undefined
   if (userConfig?.disable === true) {
     return {
       kind: "disabled",

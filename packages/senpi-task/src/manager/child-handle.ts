@@ -1,5 +1,6 @@
 import type { ChildHandle as InProcessChildHandle, RunnerOutcome } from "../runners/in-process/child-handle"
 import { mapExitOutcomeToError } from "../runners/rpc/exit-mapping"
+import type { HostSessionChildHandle } from "../runners/rpc-host/handle-port"
 import type { RpcChildHandle, RpcEntriesResult, RpcSpawnSpec, RpcSwitchSessionResult } from "../runners/types"
 
 export type { RunnerOutcome } from "../runners/in-process/child-handle"
@@ -26,8 +27,19 @@ export type ManagedChildListener = (event: ManagedChildEvent) => void
 // single waitForOutcome() that yields the unified RunnerOutcome for either runner.
 export type ManagedChildHandle = {
   readonly task_id: string
+  // Which runner owns this child. `pid` cannot answer that: a daemon session has no pid either.
+  // Absent only on handles built before the field shipped (they are in-process by construction).
+  readonly kind?: "in-process" | "rpc" | "host-session"
   readonly sessionId: string | undefined
   readonly pid: number | undefined
+  // Present only on a daemon-session child: what the record persists so a later process can find
+  // that session again. A daemon has no pid this handle may expose (I1: never signal it).
+  readonly hostSession?: {
+    readonly socket: string
+    readonly routingId: string
+    readonly sessionPath: string
+    readonly instanceId: string
+  }
   readonly spawnSpec?: RpcSpawnSpec
   steer(text: string): Promise<void>
   followUp(text: string): Promise<void>
@@ -48,6 +60,7 @@ export type ManagedChildHandle = {
 export function adaptInProcessHandle(handle: InProcessChildHandle): ManagedChildHandle {
   return {
     task_id: handle.task_id,
+    kind: "in-process",
     sessionId: handle.sessionId,
     pid: undefined,
     steer: (text) => handle.steer(text),
@@ -66,8 +79,11 @@ export function adaptInProcessHandle(handle: InProcessChildHandle): ManagedChild
 export function adaptRpcHandle(handle: RpcChildHandle): ManagedChildHandle {
   const switchSession = handle.switchSession
   const getEntries = handle.getEntries
+  const hostSession = readHostSession(handle)
   return {
     task_id: handle.task_id,
+    kind: "kind" in handle && handle.kind === "host-session" ? "host-session" : "rpc",
+    ...(hostSession === undefined ? {} : { hostSession }),
     get sessionId() {
       return handle.sessionId
     },
@@ -87,6 +103,17 @@ export function adaptRpcHandle(handle: RpcChildHandle): ManagedChildHandle {
     terminate: () => handle.terminate(),
     dispose: () => handle.dispose(),
   }
+}
+
+/** The daemon-session identity a host-backed handle carries; every other handle carries none. */
+function readHostSession(handle: RpcChildHandle): ManagedChildHandle["hostSession"] {
+  if (!isHostSessionHandle(handle)) return undefined
+  const { socket, routingId, sessionPath, instanceId } = handle.hostSession
+  return { socket, routingId, sessionPath, instanceId }
+}
+
+function isHostSessionHandle(handle: RpcChildHandle): handle is HostSessionChildHandle {
+  return "kind" in handle && handle.kind === "host-session" && "hostSession" in handle
 }
 
 async function rpcOutcome(handle: RpcChildHandle): Promise<RunnerOutcome> {

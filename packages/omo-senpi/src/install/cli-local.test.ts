@@ -29,6 +29,7 @@ async function makePackagedPlugin(): Promise<string> {
   await writeFixtureFile(join(pluginPath, "extensions", "dream-persona.md"), "# dream persona fixture\n")
   await writeFixtureFile(join(pluginPath, "extensions", "facts-persona.md"), "# facts persona fixture\n")
   await writeFixtureFile(join(pluginPath, "extensions", "kibitzer-persona.md"), "# kibitzer persona fixture\n")
+  await writeFixtureFile(join(pluginPath, "daemon-launch-spec.json"), '{"spec_version":1,"core":{"session_runtime":"in-process","multi_session":true,"extensions":["."]},"tunables":{},"env":{}}\n')
   const requiredSkillNames = [
     "ast-grep",
     "coding-agent-sessions",
@@ -36,6 +37,7 @@ async function makePackagedPlugin(): Promise<string> {
     "frontend",
     "git-master",
     "init-deep",
+    "browser",
     "lsp-setup",
     "programming",
     "refactor",

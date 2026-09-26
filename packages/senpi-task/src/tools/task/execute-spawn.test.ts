@@ -134,7 +134,10 @@ describe("buildTaskExecute spawn", () => {
           categories: {},
           agents: {},
           task: {
+            isolation: { enabled: false, backend: "auto", apply: true, merge: "patch", commits: "generic" },
             default_execution_mode: "process",
+            process_runner: "host",
+            host_engine_policy: "upgrade",
             default_concurrency: 5,
             global_concurrency: 8,
             max_depth: 1,

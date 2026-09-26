@@ -1,6 +1,8 @@
 import { log } from "@oh-my-opencode/utils"
 
+import type { TaskRecord } from "../state"
 import { delay, nowIso, type LifecycleContext } from "./context"
+import { isHostSessionRecord } from "./host-session"
 import type { DestroyCause, ResidentHandle } from "./port"
 
 /**
@@ -15,11 +17,20 @@ import type { DestroyCause, ResidentHandle } from "./port"
  * dispose transition), while suspension must keep the record continuable as persisted_only /
  * rpc_detached, so it cannot route through destroyResidentTask.
  */
+/**
+ * What an orphan (a child with no live handle in this process) looks like to the destruction port.
+ * A TTL expunge has already tombstoned its record, so the committed copy travels with the request.
+ */
+export type OrphanTarget = {
+  readonly pid?: number
+  readonly record?: TaskRecord
+}
+
 export async function destroyResidentTask(
   context: LifecycleContext,
   taskId: string,
   cause: DestroyCause,
-  orphanPid?: number,
+  orphan?: OrphanTarget,
 ): Promise<void> {
   const claimedEviction = cause === "evict" ? (context.registry.tryClaimEviction?.(taskId) ?? true) : false
   if (cause === "evict" && !claimedEviction) return
@@ -36,7 +47,7 @@ export async function destroyResidentTask(
         if (cause === "revive_failure") recordRevivalFailure(context, taskId)
       }
     } else if (cause === "reconcile_lost" || cause === "ttl" || cause === "revive_failure") {
-      await terminateOrphan(context, taskId, orphanPid)
+      await terminateOrphan(context, taskId, orphan)
       if (cause === "revive_failure") recordRevivalFailure(context, taskId)
     }
     if (cause !== "fallback_handoff" && cause !== "revive_failure") recordResidency(context, taskId, cause)
@@ -45,6 +56,8 @@ export async function destroyResidentTask(
   }
 }
 
+// A host-session handle's terminate() IS `abort` then `close_session` (runners/rpc-host/handle.ts),
+// so the rpc branch below is exactly right for it: no pid is involved on either side.
 async function teardownHandle(handle: ResidentHandle, skipInProcessAbort: boolean): Promise<void> {
   // The pre-dispose step (in-process abort / rpc terminate) is best-effort: an already-exited child
   // rejects it. DAG cancellation skips in-process abort only after the child's outcome has settled,
@@ -71,9 +84,16 @@ async function bestEffort(taskId: string, step: "abort" | "terminate", run: () =
 // must not survive reconciliation or TTL expunge. Breadcrumbs are already persisted on the `lost`
 // record by the caller BEFORE this runs. For TTL the record is already tombstoned (invisible to
 // load), so the sweep passes the committed record's pid explicitly as orphanPid.
-async function terminateOrphan(context: LifecycleContext, taskId: string, orphanPid?: number): Promise<void> {
-  const record = context.store.load(taskId)
-  const pid = record === null ? orphanPid : record.execution_mode === "process" ? record.pid : undefined
+async function terminateOrphan(context: LifecycleContext, taskId: string, orphan?: OrphanTarget): Promise<void> {
+  const record = context.store.load(taskId) ?? orphan?.record ?? null
+  // A daemon session is ended through the single close writer, never a signal: the only pid on the
+  // other end is the machine-wide daemon's, which belongs to no child (invariant I1).
+  if (isHostSessionRecord(record)) {
+    if (!(await context.hostSessionProbe.sessionLive(record.host_session))) return
+    await closeOrphanSession(context, taskId, record.host_session, record.spawn_spec?.cwd)
+    return
+  }
+  const pid = record === null ? orphan?.pid : record.execution_mode === "process" ? record.pid : undefined
   if (pid === undefined) return
   if (!context.signaller.isAlive(pid)) return
 
@@ -84,6 +104,26 @@ async function terminateOrphan(context: LifecycleContext, taskId: string, orphan
     context.signaller.signal(pid, "SIGKILL")
     context.store.appendEvent(taskId, { type: "reconcile_terminated", payload: { pid, signal: "SIGKILL" } })
   }
+}
+
+async function closeOrphanSession(
+  context: LifecycleContext,
+  taskId: string,
+  hostSession: TaskRecord["host_session"] & {},
+  cwd: string | undefined,
+): Promise<void> {
+  const close = context.hostSessionClose
+  if (close === undefined) return
+  try {
+    await close({ hostSession, ...(cwd === undefined ? {} : { cwd }) })
+  } catch (error) {
+    log("senpi-task orphan session close rejected", { taskId, error: String(error) })
+    return
+  }
+  context.store.appendEvent(taskId, {
+    type: "host_session_closed",
+    payload: { session_path: hostSession.session_path, socket: hostSession.socket },
+  })
 }
 
 function recordRevivalFailure(context: LifecycleContext, taskId: string): void {

@@ -1,8 +1,9 @@
 import type { OmoConfig } from "@oh-my-opencode/omo-config-core"
 
 import type { AgentDefinition, SkillInvocationState } from "../../agents"
+import type { IsolationDetails, IsolationStartedDetails } from "../../isolation/details"
 import type { KernelToolErrorCode } from "../../kernel-tools/contract"
-import type { TaskManager } from "../../manager"
+import type { ExecutionModeGate, TaskManager } from "../../manager"
 import type { RunnerFailure } from "../../runners/in-process/child-handle"
 import type { ResolvedModelRecord, TaskRunStats } from "../../state"
 import type { TaskToolParamsStatic } from "./params"
@@ -74,11 +75,17 @@ export type TaskToolDeps = {
   // A kernel-tool grant is decided against them before any child exists; absent falls back to the
   // senpi session builtins (runners/in-process/host-tools.ts).
   readonly resolveChildToolNames?: () => readonly string[]
+  // The parent session's ONE resolution of `task.default_execution_mode: "auto"` (the shared-daemon
+  // capability check). Absent -> `auto` reads as in-process and the manager decides at spawn.
+  readonly executionModeGate?: ExecutionModeGate
 }
 
 export type TaskToolMode = "spawn"
 
 type ResolvedSpawnItemBase = {
+  readonly isolated?: boolean
+  readonly apply?: boolean
+  readonly merge?: "patch" | "branch"
   readonly prompt: string
   readonly task_summary?: string
   readonly description?: string
@@ -151,7 +158,10 @@ export type TaskToolDetails = {
   readonly items?: readonly TaskToolItemDetail[]
   // The runner's typed failure kind when a start failed, so the caller can tell a refused parent
   // kernel-tool grant from a generic runner failure without reading prose.
-  readonly failure_kind?: RunnerFailure["kind"]
+  readonly failure_kind?: RunnerFailure["kind"] | "isolation_unavailable"
+  // A settled isolated child reports its merge outcome here; a background start reports only where
+  // the child is working, because the merge has not happened yet.
+  readonly isolation?: IsolationDetails | IsolationStartedDetails
   readonly reason?: string
   readonly run_stats?: TaskRunStats
   readonly skills?: TaskSkillSummary

@@ -29,8 +29,17 @@ export { REQUIRED_PLUGIN_ARTIFACTS }
 
 // Mirrors the files allowlist in packages/omo-senpi/plugin/package.json (locked by build-omo-native.test.ts).
 export const PAYLOAD_DIRECTORIES = ["extensions", "skills", "skills-conditional", "runtime"] as const
-export const PAYLOAD_FILES = ["package.json", "CHANGELOG.md", "README.md", "NOTICE", "LICENSE"] as const
+// Root-level plugin files. The daemon launch spec is the task daemon's only argv source; it is
+// generated at build time and must reach every payload, not just the source tree.
+export const PAYLOAD_FILES = ["package.json", "CHANGELOG.md", "README.md", "NOTICE", "LICENSE", "daemon-launch-spec.json"] as const
 export const PAYLOAD_SCRIPT = join("scripts", "install.mjs")
+
+// Native-only runtime: `omo doctor` / `omo setup` import it to classify task-category coverage with
+// the senpi-task resolver itself (packages/omo-native/category-coverage-entry.ts). The launcher is
+// plain JS, so this bundle is its route to the TypeScript resolver; omo-senpi installs never load it.
+export const CATEGORY_COVERAGE_ENTRY = join(packageDir, "category-coverage-entry.ts")
+export const CATEGORY_COVERAGE_ARTIFACT = join("runtime", "category-coverage", "index.js")
+export const NATIVE_REQUIRED_ARTIFACTS = [...REQUIRED_PLUGIN_ARTIFACTS, CATEGORY_COVERAGE_ARTIFACT] as const
 
 interface BuildOptions {
   readonly outputDir: string
@@ -123,10 +132,21 @@ function runSenpiPluginBuild(outputDir: string): void {
       if (existsSync(sourcePath)) copyFileSync(sourcePath, join(stagedPluginDir, name))
     }
     copyFileSync(join(repoRoot, "CHANGELOG.md"), join(stagedPluginDir, "CHANGELOG.md"))
+    buildCategoryCoverageRuntime(join(stagedPluginDir, CATEGORY_COVERAGE_ARTIFACT))
     copyPluginPayload(outputDir, stagedPluginDir)
   } finally {
     rmSync(buildRoot, { recursive: true, force: true })
   }
+}
+
+function buildCategoryCoverageRuntime(outfile: string): void {
+  const result = spawnSync(
+    "bun",
+    ["build", CATEGORY_COVERAGE_ENTRY, "--target", "node", "--format", "esm", "--minify-syntax", "--minify-whitespace", "--outfile", outfile],
+    { cwd: repoRoot, stdio: "inherit" },
+  )
+  if (result.error !== undefined) throw result.error
+  if (result.status !== 0) throw new Error(`category-coverage runtime build failed with exit code ${result.status ?? 1}`)
 }
 
 function copyTree(sourceDir: string, outputDir: string): void {
@@ -165,7 +185,7 @@ function copyPluginPayload(outputDir: string, pluginDir = sourcePluginDir): void
 }
 
 function findMissingArtifact(outputDir: string): string | undefined {
-  for (const artifact of REQUIRED_PLUGIN_ARTIFACTS) {
+  for (const artifact of NATIVE_REQUIRED_ARTIFACTS) {
     if (!existsSync(join(outputDir, artifact))) return artifact
   }
   return undefined
@@ -190,7 +210,7 @@ function main(argv: readonly string[]): number {
     writeFileSync(join(packageDir, ".gitignore"), "/plugin/\n", "utf8")
   }
   console.log(
-    `omo-native payload complete at ${options.outputDir} (${REQUIRED_PLUGIN_ARTIFACTS.length} required artifacts present)`,
+    `omo-native payload complete at ${options.outputDir} (${NATIVE_REQUIRED_ARTIFACTS.length} required artifacts present)`,
   )
   return 0
 }

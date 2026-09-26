@@ -44,7 +44,8 @@ function hasUserModel(config: OmoConfig, category: string): boolean {
 /**
  * Planner decorator that surfaces dead-chain category failures. On a model_unavailable plan error
  * carrying attempted_chain, once per (session, category): a headless-safe ui notify (auto-bridged
- * to RPC {method:"notify"} by senpi) plus a structured custom message for remote clients. It never
+ * to RPC {method:"notify"} by senpi) plus a structured custom message for remote clients, naming
+ * the unconnected providers and the fix (/login or a categories.<name>.model pin). It never
  * steers or triggers a turn, never fires at tool registration (the planner only runs at spawn,
  * when the registry is captured), and never warns for categories with a user-configured model.
  * Suppression: categories.<name>.warn_unavailable ?? task.warnings.unavailable_categories ?? true.
@@ -62,7 +63,7 @@ export function createCategoryUnavailableWarningPlanner(deps: CategoryUnavailabl
     if (!warned(`${sessionId}:${category}`)) return resolution
 
     const providers = (error.missing_providers ?? []).join(", ")
-    const text = `Category "${category}" has no usable model: none of its fallback-chain providers are connected (${providers}).`
+    const text = `Category "${category}" has no usable model: none of its fallback-chain providers are connected (${providers}). Connect one with /login, or pin categories.${category}.model in omo.json.`
     deps.runtime.ui()?.notify(text, "info")
     deps.pi.sendMessage(
       {

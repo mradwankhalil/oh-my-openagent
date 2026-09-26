@@ -1,5 +1,6 @@
 import type { AgentLimitReached } from "./errors"
 import type { TaskRecord } from "../state"
+import type { HostSessionParkOptions, HostSessionParkOutcome } from "./host-session-revive"
 import type { DestroyCause, DetachedRevivalRollbackResult } from "./port"
 
 export type AdmissionResult =
@@ -20,6 +21,13 @@ export type ReconcileDeferredReason =
   | "team_inactive"
   | "reattach_disabled"
   | "rollback_failed"
+  // A previous daemon generation still holds this session path; the child waits, it is never lost.
+  | "host_draining"
+  // The daemon hosting this child did not answer; the record stays parked until it does.
+  | "host_unreachable"
+  // The child ran in a copy-on-write clone that is already settled and reclaimed; respawning it
+  // would resume against a directory that no longer exists, so it is refused at every boundary.
+  | "isolated_not_revivable"
 
 export type ReconcileOutcome = {
   readonly task_id: string
@@ -62,6 +70,9 @@ export type TaskLifecycle = {
   dispose?(): void
   admitResident(parentSessionId: string): Promise<AdmissionResult>
   reconcileOnSessionStart(parentSessionId?: string): Promise<ReconcileResult>
+  // The daemon hosting this child went away: park the record and retry the reconcile on a bounded
+  // backoff. Giving up leaves it suspended (rpc_detached) - never lost, never signalled.
+  parkHostSessionOnDaemonLoss(taskId: string, options?: HostSessionParkOptions): Promise<HostSessionParkOutcome>
   cleanupExpiredRecords(): Promise<CleanupResult>
   suspendOnSessionShutdown(input: SuspendInput): Promise<SuspendSummary>
 }

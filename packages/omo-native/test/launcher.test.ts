@@ -4,7 +4,6 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { updateTarget } from "../bin/lib/package-paths.js"
 
 const SOURCE_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const roots: string[] = []
@@ -150,11 +149,20 @@ function runtimeInterpreter(runtime: "node" | "bun"): string | undefined {
   return resolved ? resolved : undefined
 }
 
-function expectedBunUpdateCommand(packageRoot: string): string {
-  const quotedRoot = process.platform === "win32"
-    ? `"${packageRoot.replaceAll("\\", "/")}"`
-    : `'${packageRoot.replaceAll("'", "'\\''")}'`
-  return `omo is updated via bun: bun add --cwd ${quotedRoot} -g omo-ai@beta`
+const BUN_UPDATE_HINT = "omo is updated via bun: bun add -g omo-ai@beta"
+const NPM_UPDATE_HINT = "omo is updated via npm: npm i -g omo-ai@beta"
+
+function stubPackageManagerSpawn(fixture: Fixture): void {
+  writeFile(join(fixture.packageRoot, "bin", "lib", "child-process.js"), `
+import { writeFileSync } from "node:fs"
+export function propagateResult() {}
+export async function spawnNode() {}
+export async function runChild(command, args, options = {}) {
+  writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ command, args, env: options.env ?? {} }))
+  if (process.env.FAKE_SPAWN_ERROR) throw new Error(process.env.FAKE_SPAWN_ERROR)
+  return { status: Number(process.env.FAKE_EXIT ?? 0), signal: null }
+}
+`)
 }
 
 afterEach(() => {
@@ -162,6 +170,68 @@ afterEach(() => {
 })
 
 describe("omo launcher", () => {
+  describe("POSIX execve handoff", () => {
+    test("passes argv[0], the engine arguments and environment without spawning a child", () => {
+      // given: a subprocess-local spy cannot replace the test runner itself.
+      const fixture = createFixture()
+      const probe = join(fixture.packageRoot, "probe.mjs")
+      const execCapture = join(fixture.root, "exec.json")
+      writeFile(probe, `
+import { writeFileSync } from "node:fs"
+import { runLauncher } from "./bin/lib/launcher.js"
+Object.defineProperty(process, "platform", { value: "linux" })
+process.execve = (file, argv, env) => {
+  writeFileSync(process.env.EXEC_CAPTURE, JSON.stringify({ file, argv, env }))
+}
+await runLauncher(["say", "hi", "-e", "/user/plugin"])
+`)
+      // when
+      const result = spawnSync(process.execPath, [probe], {
+        encoding: "utf8",
+        env: { ...process.env, EXEC_CAPTURE: execCapture, CAPTURE_FILE: fixture.captureFile, OMO_CODING_AGENT_DIR: join(fixture.root, "agent") },
+      })
+      // then: the fake engine writes captureFile only if the spawn path ran.
+      expect(result.status).toBe(0)
+      expect(existsSync(execCapture)).toBe(true)
+      expect(existsSync(fixture.captureFile)).toBe(false)
+      const handed = JSON.parse(readFileSync(execCapture, "utf8"))
+      expect(handed.file).toBe(process.execPath)
+      expect(handed.argv).toEqual([
+        process.execPath, join(fixture.packageRoot, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js"),
+        "--extension", join(fixture.packageRoot, "plugin"), "say", "hi", "-e", "/user/plugin",
+      ])
+      expect(handed.env.OMO_CODING_AGENT_DIR).toBe(join(fixture.root, "agent"))
+      expect(handed.env.SENPI_CODING_AGENT_DIR).toBe(join(fixture.root, "agent"))
+      expect(handed.env.OMO_NATIVE).toBe("1")
+      expect(handed.env.CAPTURE_FILE).toBe(fixture.captureFile)
+      expect(result.stderr).not.toContain("ExperimentalWarning")
+    })
+
+    for (const mode of ["throw", "absent", "win32"] as const) {
+      test(`preserves the child exit code and environment when execve is ${mode}`, () => {
+        // given
+        const fixture = createFixture()
+        const probe = join(fixture.packageRoot, "probe.mjs")
+        writeFile(probe, `
+import { runLauncher } from "./bin/lib/launcher.js"
+${mode === "win32" ? 'Object.defineProperty(process, "platform", { value: "win32" })' : ""}
+process.execve = ${mode === "absent" ? "undefined" : '() => { throw new Error("injected execve unavailable") }'}
+await runLauncher(["say", "hi"])
+`)
+        // when
+        const result = spawnSync(process.execPath, [probe], {
+          encoding: "utf8",
+          env: { ...process.env, CAPTURE_FILE: fixture.captureFile, FAKE_EXIT: "37", OMO_CODING_AGENT_DIR: join(fixture.root, "agent") },
+        })
+        // then
+        expect(result.status).toBe(37)
+        expect(capture(fixture).argv).toEqual(["--extension", join(fixture.packageRoot, "plugin"), "say", "hi"])
+        expect(capture(fixture).env.OMO_CODING_AGENT_DIR).toBe(join(fixture.root, "agent"))
+        expect(result.stderr).not.toContain("ExperimentalWarning")
+      })
+    }
+  })
+
   describe("#given a fake senpi package", () => {
     describe("#when the default command is launched", () => {
       test("#then the packaged extension precedes user extension arguments", () => {
@@ -263,6 +333,7 @@ describe("omo launcher", () => {
           })
           expect(result.status).toBe(0)
           expect(capture(fixture).env.SENPI_RUNTIME).toBe(runtime)
+          expect(result.stderr).not.toContain("ExperimentalWarning")
         })
       }
 
@@ -295,8 +366,8 @@ describe("omo launcher", () => {
     })
 
     describe("#when a self-update is requested", () => {
-      for (const args of [["update", "--self"], ["update", "self"], ["update", "senpi"]]) {
-        test(`#then ${args.join(" ")} is answered with the product's own update command`, () => {
+      for (const args of [["update", "--self", "--dry-run"], ["update", "self", "--dry-run"], ["update", "senpi", "--print"]]) {
+        test(`#then ${args.join(" ")} prints the product's own update command without spawning senpi`, () => {
           const fixture = createFixture()
           const result = run(fixture, args)
           expect(result.status).toBe(0)
@@ -335,56 +406,79 @@ describe("omo launcher", () => {
     })
 
     describe("#when bare update is requested", () => {
-      test("#then npm beta guidance is printed without spawning senpi", () => {
+      test("#then --dry-run prints npm beta guidance without spawning senpi or the package manager", () => {
         const fixture = createFixture()
-        const result = run(fixture, ["update"])
+        const result = run(fixture, ["update", "--dry-run"])
         expect(result.status).toBe(0)
-        expect(result.stdout).toContain("omo is updated via npm: npm i -g omo-ai@beta")
+        expect(result.stdout.trim()).toBe(NPM_UPDATE_HINT)
         expect(existsSync(fixture.captureFile)).toBe(false)
       })
 
-      test("#then a Bun-managed install uses a clean package cwd", () => {
+      test("#then --print keeps the print-only answer", () => {
         const fixture = createFixture({ installLayout: "bun" })
-        const result = run(fixture, ["update"])
-
+        const result = run(fixture, ["update", "--print"])
         expect(result.status).toBe(0)
-        expect(result.stdout.trim()).toBe(expectedBunUpdateCommand(fixture.packageRoot))
+        expect(result.stdout.trim()).toBe(BUN_UPDATE_HINT)
         expect(existsSync(fixture.captureFile)).toBe(false)
       })
 
-      test("#then a Bun path with shell metacharacters is quoted for the host", () => {
-        const fixture = createFixture({ installLayout: "bun-posix-special" })
-        const result = run(fixture, ["update"])
-
+      test("#then a Bun-managed --dry-run prints bun add -g without a --cwd", () => {
+        const fixture = createFixture({ installLayout: "bun" })
+        const result = run(fixture, ["update", "--dry-run"])
         expect(result.status).toBe(0)
-        expect(result.stdout.trim()).toBe(expectedBunUpdateCommand(fixture.packageRoot))
+        expect(result.stdout.trim()).toBe(BUN_UPDATE_HINT)
+        expect(existsSync(fixture.captureFile)).toBe(false)
       })
 
-      test("#then a Windows-style Bun path uses shell-compatible forward slashes", () => {
-        const root = String.raw`C:\Users\omo user\.bun\install\global\node_modules\omo-ai`
-
-        expect(updateTarget(root, "win32")).toEqual({
-          manager: "bun",
-          command: "bun add --cwd \"C:/Users/omo user/.bun/install/global/node_modules/omo-ai\" -g omo-ai@beta",
-        })
-      })
-
-      test("#then an npm-managed install keeps the npm update command", () => {
+      test("#then an npm-managed --dry-run keeps the npm update command", () => {
         const fixture = createFixture({ installLayout: "npm" })
-        const result = run(fixture, ["update"])
-
+        const result = run(fixture, ["update", "--dry-run"])
         expect(result.status).toBe(0)
-        expect(result.stdout.trim()).toBe("omo is updated via npm: npm i -g omo-ai@beta")
+        expect(result.stdout.trim()).toBe(NPM_UPDATE_HINT)
         expect(existsSync(fixture.captureFile)).toBe(false)
       })
 
-      test("#then an unknown install layout fails safe to npm", () => {
+      test("#then an unknown install layout fails safe to npm on --dry-run", () => {
         const fixture = createFixture({ installLayout: "unknown" })
-        const result = run(fixture, ["update"])
-
+        const result = run(fixture, ["update", "--dry-run"])
         expect(result.status).toBe(0)
-        expect(result.stdout.trim()).toBe("omo is updated via npm: npm i -g omo-ai@beta")
+        expect(result.stdout.trim()).toBe(NPM_UPDATE_HINT)
         expect(existsSync(fixture.captureFile)).toBe(false)
+      })
+
+      test("#then executing update spawns the resolved npm command and prints before/after versions", () => {
+        const fixture = createFixture()
+        stubPackageManagerSpawn(fixture)
+        const result = run(fixture, ["update"])
+        expect(result.status).toBe(0)
+        expect(result.stdout).toContain(NPM_UPDATE_HINT)
+        expect(result.stdout).toContain("omo 1.2.3-test.0 -> 1.2.3-test.0 (engine: senpi 2026.8.9)")
+        const spawned = JSON.parse(readFileSync(fixture.captureFile, "utf8"))
+        expect(spawned.command).toBe("npm")
+        expect(spawned.args).toEqual(["i", "-g", "omo-ai@beta"])
+      })
+
+      test("#then executing a Bun-managed update overlays BUN_INSTALL and spawns bun add -g", () => {
+        const fixture = createFixture({ installLayout: "bun" })
+        stubPackageManagerSpawn(fixture)
+        const result = run(fixture, ["update"], { BUN_INSTALL: "/wrong" })
+        expect(result.status).toBe(0)
+        expect(result.stdout).toContain(BUN_UPDATE_HINT)
+        expect(result.stdout).toContain("omo 1.2.3-test.0 -> 1.2.3-test.0 (engine: senpi 2026.8.9)")
+        const spawned = JSON.parse(readFileSync(fixture.captureFile, "utf8"))
+        expect(spawned.command).toBe("bun")
+        expect(spawned.args).toEqual(["add", "-g", "omo-ai@beta"])
+        expect(spawned.env.BUN_INSTALL).toBe(fixture.packageRoot.replaceAll("\\", "/").replace(/\/install\/global\/node_modules\/omo-ai$/, ""))
+      })
+
+      test("#then a failing package-manager run exits non-zero with the manual command", () => {
+        const fixture = createFixture()
+        stubPackageManagerSpawn(fixture)
+        const result = run(fixture, ["update"], { FAKE_EXIT: "7" })
+        expect(result.status).toBe(7)
+        expect(result.stdout).toContain(NPM_UPDATE_HINT)
+        expect(result.stderr).toContain("retry with: npm i -g omo-ai@beta")
+        expect(result.stdout).not.toContain(" -> ")
       })
     })
 

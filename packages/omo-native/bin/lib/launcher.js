@@ -1,15 +1,20 @@
+import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { spawnNode } from "./child-process.js"
+import { doctorCoverageLines } from "./category-coverage.js"
+import { runDaemonCommand } from "./daemon.js"
 import { runDoctor } from "./doctor.js"
+import { ensureEnginePrepared } from "./engine-prepare.js"
 import { migrateLegacyBunGlobalManifest } from "./legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./agent-dir.js"
 import { nearestNodeBin, packageManifest, packageRoot, readJson, resolveSenpi, updateTarget } from "./package-paths.js"
+import { runSelfUpdate } from "./self-update.js"
 import { detectHarnesses } from "./setup-detect.js"
 import { readSetupSuggestionCache, spawnSetupSuggestionRefresh } from "./setup-detect-cache.js"
 import { printSetupReport } from "./setup-report.js"
 
-const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server"])
+const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server", "host"])
 const selfUpdateTargets = new Set(["self", "senpi", "omo"])
 // Updating extensions or model catalogs is the engine's job; everything else under `update`
 // would try to replace the pinned engine, so the launcher answers it instead.
@@ -104,12 +109,31 @@ function senpiEnvironment(senpiRoot) {
   return env
 }
 
-async function spawnSenpi(args, withExtension) {
+function preparedSenpi() {
   const senpi = resolveSenpi()
+  ensureEnginePrepared({
+    senpiRoot: senpi.packageRoot,
+    omoVersion: packageManifest().version,
+    reinstallCommand: updateTarget().command,
+  })
+  return senpi
+}
+
+async function spawnSenpi(args, withExtension) {
+  const senpi = preparedSenpi()
   const finalArgs = withExtension
     ? ["--extension", join(packageRoot, "plugin"), ...args]
     : args
-  await spawnNode(senpi.cliPath, finalArgs, { env: senpiEnvironment(senpi.packageRoot) })
+  const env = senpiEnvironment(senpi.packageRoot)
+  if (process.platform !== "win32" && typeof process.execve === "function") {
+    try {
+      process.execve(process.execPath, [process.execPath, senpi.cliPath, ...finalArgs], env)
+      return
+    } catch {
+      // A failed replacement still uses the signal-aware child path below.
+    }
+  }
+  await spawnNode(senpi.cliPath, finalArgs, { env })
 }
 
 function isInteractiveDefault(args) {
@@ -145,6 +169,21 @@ function setupSuggestionForLaunch() {
   return cached.suggestion === true
 }
 
+/**
+ * One call into the engine's host CLI. It prints a single JSON line and exits, so the output is
+ * captured rather than inherited - `omo daemon` has to read the engine's answer to turn it into
+ * an exit code, and `spawnSync` is honest about a call that is expected to be this short.
+ */
+export function engineHostCall(engineArgs, options) {
+  const senpi = preparedSenpi()
+  const result = spawnSync(process.execPath, [senpi.cliPath, ...engineArgs], {
+    encoding: "utf8",
+    env: { ...senpiEnvironment(senpi.packageRoot), ...options.env },
+    windowsHide: true,
+  })
+  return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
+}
+
 export async function runLauncher(args = process.argv.slice(2)) {
   migrateLegacyBunGlobalManifest()
   reportLegacyFlatAdoption()
@@ -156,8 +195,33 @@ export async function runLauncher(args = process.argv.slice(2)) {
     process.exitCode = 2
     return
   }
+  // The daemon is the engine's to run; omo only supplies the launch spec, the policy from
+  // omo.json, and an exit code the caller can branch on.
+  if (command === "daemon") {
+    const outcome = runDaemonCommand(args.slice(1), {
+      engine: { run: engineHostCall },
+      pluginRoot: join(packageRoot, "plugin"),
+      agentDir: canonicalAgentDir(),
+      env: process.env,
+      stdout: process.stdout,
+      stderr: process.stderr,
+      platform: process.platform,
+    })
+    // `omo daemon attach <launch args>`: the daemon is reachable, so this becomes a normal launch
+    // whose environment points the engine at the shared socket instead of starting its own.
+    if (typeof outcome === "object") {
+      const senpi = preparedSenpi()
+      await spawnNode(senpi.cliPath, ["--extension", join(packageRoot, "plugin"), ...outcome.args], {
+        env: { ...senpiEnvironment(senpi.packageRoot), ...outcome.env },
+      })
+      return
+    }
+    process.exitCode = outcome
+    return
+  }
   if (command === "doctor") {
-    runDoctor(await detectHarnesses(), args.slice(1))
+    const categoryCoverage = args[1] === "--reap" ? [] : await doctorCoverageLines({ agentDir: canonicalAgentDir() })
+    runDoctor(await detectHarnesses(), args.slice(1), { daemonEngine: { run: engineHostCall }, categoryCoverage })
     return
   }
   if (command === "setup") {
@@ -171,11 +235,9 @@ export async function runLauncher(args = process.argv.slice(2)) {
     return
   }
   // The engine is pinned by this package, so a self-update would break the pairing; every
-  // self-update spelling is answered with the command that actually updates the product.
+  // self-update spelling runs the product command instead of asking senpi to move the pin.
   if (isSelfUpdate(args)) {
-    const update = updateTarget()
-    console.log(`omo is updated via ${update.manager}: ${update.command}`)
-    process.exitCode = 0
+    process.exitCode = await runSelfUpdate(args)
     return
   }
   if (earlyCommands.has(command) || command === "update") {

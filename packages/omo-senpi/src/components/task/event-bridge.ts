@@ -1,5 +1,5 @@
 import type { SessionShutdownEvent } from "@code-yeongyu/senpi"
-import { OMO_SENPI_TASK_RPC_CHILD } from "@oh-my-opencode/senpi-task"
+import { readSessionRole } from "@oh-my-opencode/senpi-task"
 import type { ComponentContext, SenpiExtensionAPI } from "../../extension/types"
 import type { TaskEngine } from "./engine"
 import type { LeadPollerLifecycle } from "./lead-poller-lifecycle"
@@ -49,7 +49,9 @@ export function wireEventBridge(
   pi.on("session_start", async (_payload, eventCtx) => {
     engine.runtime.captureFrom(asLiveContext(eventCtx))
     const sessionId = engine.runtime.sessionId()
-    if (process.env[OMO_SENPI_TASK_RPC_CHILD] === "1" && sessionId === undefined) return
+    // A child session that has not reported its own id yet has nothing to reconcile: its records
+    // belong to the parent. The role comes from the session (shared daemon), else from the env.
+    if (readSessionRole(pi) !== undefined && sessionId === undefined) return
     transitions.onSessionStart(sessionId)
     const reconciliation = await engine.lifecycle.reconcileOnSessionStart(sessionId)
     const livenessRecords = new Map<string, ReturnType<typeof engine.manager.get>>()
@@ -114,14 +116,24 @@ export function wireEventBridge(
     const parentSessionId = engine.runtime.sessionId()
     const reason = shutdownEvent.reason
     engine.lifecycle.dispose?.()
-    if (parentSessionId === undefined || typeof reason !== "string") {
+    if (typeof reason !== "string") {
       ctx.logger.warn(
-        "omo-senpi task session_shutdown skipped: no captured session id or malformed reason",
+        "omo-senpi task session_shutdown skipped: malformed reason",
         { parentSessionId, reason },
       )
       return
     }
-    await engine.lifecycle.suspendOnSessionShutdown({ parentSessionId, reason })
+    // The context can lose its session id during teardown. Only this engine's live handles
+    // establish fallback ownership; scanning every record would suspend sibling host sessions.
+    const parentSessionIds = parentSessionId === undefined
+      ? new Set(engine.manager.residentTaskIds().flatMap((taskId) => {
+        const record = engine.manager.get(taskId)
+        return record === undefined ? [] : [record.parent_session_id]
+      }))
+      : new Set([parentSessionId])
+    for (const sessionId of parentSessionIds) {
+      await engine.lifecycle.suspendOnSessionShutdown({ parentSessionId: sessionId, reason })
+    }
   })
 
   pi.on("model_select", (_payload, eventCtx) => {

@@ -32,6 +32,7 @@ const PACKED_ARTIFACTS = [
   "plugin/runtime/ast-grep-mcp/cli.js",
   "plugin/runtime/dag/sdk.js",
   "plugin/runtime/agent-toolkit-sdk/sdk.js",
+  "plugin/runtime/category-coverage/index.js",
 ] as const
 
 const PACKED_SKILL_COUNT = 23

@@ -20,7 +20,7 @@ export type EmbeddedFile = Blob & {
   text?: () => Promise<string>
 }
 export type EmbeddedManifestEntry = { relPath: string; sha256: string; mode: number; size: number }
-export type EmbeddedManifest = { omoAiVersion: string; enginePin: string; manifestSha: string; entries: EmbeddedManifestEntry[]; buildInfo?: unknown }
+export type EmbeddedManifest = { omoAiVersion: string; enginePin: string; manifestSha: string; entries: EmbeddedManifestEntry[]; buildInfo?: unknown; engineBuild?: unknown }
 
 export function isProvisionedExecutable(execPath: string, expectedPath: string): boolean {
   try {

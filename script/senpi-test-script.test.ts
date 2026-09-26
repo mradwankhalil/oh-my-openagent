@@ -7,6 +7,7 @@ import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runSenpiInstaller } from "../packages/omo-senpi/src/install/install-senpi"
+import { BUILD_NODES, selectBuildNodes } from "./build-nodes"
 
 const packageManifestPath = new URL("../package.json", import.meta.url)
 const ciWorkflowPath = new URL("../.github/workflows/ci.yml", import.meta.url)
@@ -44,7 +45,6 @@ describe("Senpi compatibility test script", () => {
     // #given
     const manifest = readRootManifest()
     const files = manifest.files ?? []
-    const buildOrchestrator = readFileSync(new URL("./build.ts", import.meta.url), "utf8")
     const prepublishOnlyScript = manifest.scripts?.prepublishOnly ?? ""
 
     // #when
@@ -60,13 +60,14 @@ describe("Senpi compatibility test script", () => {
       "node packages/omo-senpi/plugin/scripts/stage-ast-grep-mcp-runtime.mjs",
       "node packages/omo-senpi/plugin/scripts/stage-x-search-skill.mjs",
       "node packages/omo-senpi/plugin/scripts/build-extension.mjs",
+      // The daemon launch spec is generated at build time so the plugin payload ships the only
+      // argv source the task daemon has; it sits between the extension build and skill sync.
+      "node packages/omo-senpi/plugin/scripts/build-daemon-launch-spec.mjs",
       "node packages/omo-senpi/plugin/scripts/sync-skills.mjs",
       "node packages/omo-senpi/plugin/scripts/embed-directive.mjs --check",
       "node packages/omo-senpi/plugin/scripts/build-install.mjs",
     ].join(" && ")
-    const senpiNode = /id: "senpi-plugin"[\s\S]*?args: \["run", "build:senpi-plugin:stage"\][\s\S]*?deps: \["ast-grep-mcp", "lsp-daemon", "codex-plugin"\]/.test(
-      buildOrchestrator,
-    )
+    const senpiNode = BUILD_NODES.find((node) => node.id === "senpi-plugin")
 
     // #then
     expect(
@@ -75,10 +76,19 @@ describe("Senpi compatibility test script", () => {
     ).toBe(false)
     expect(hasStandaloneBuildScript, "standalone Senpi build must build the shared daemon once before staging").toBe(true)
     expect(hasStageScript, "root scripts must expose a stage-only Senpi artifact build").toBe(true)
-    expect(buildOrchestrator, "the build orchestrator must generate Senpi plugin artifacts before publishing").toContain(
+    expect(senpiNode?.args, "the build orchestrator must generate Senpi plugin artifacts before publishing").toEqual([
+      "run",
       "build:senpi-plugin:stage",
-    )
-    expect(senpiNode, "build graph senpi-plugin must wait for every shared runtime and plugin dependency").toBe(true)
+    ])
+    expect(senpiNode?.deps, "build graph senpi-plugin must wait for every shared runtime and plugin dependency").toEqual([
+      "ast-grep-mcp",
+      "lsp-daemon",
+      "codex-plugin",
+    ])
+    expect(
+      selectBuildNodes(BUILD_NODES, undefined).map((node) => node.id),
+      "a default build must still schedule the Senpi plugin stage",
+    ).toContain("senpi-plugin")
     expect(prepublishOnlyScript, "prepublishOnly must route through build, which includes the Senpi plugin build").toContain(
       "bun run build",
     )
@@ -93,6 +103,7 @@ describe("Senpi compatibility test script", () => {
       await mkdir(join(pluginRoot, "extensions"), { recursive: true })
       const requiredSkillNames = [
         "ast-grep",
+        "browser",
         "coding-agent-sessions",
         "debugging",
         "frontend",
@@ -128,6 +139,8 @@ describe("Senpi compatibility test script", () => {
       await writeFile(join(pluginRoot, "extensions", "dream-persona.md"), "# dream persona fixture\n")
       await writeFile(join(pluginRoot, "extensions", "facts-persona.md"), "# facts persona fixture\n")
       await writeFile(join(pluginRoot, "extensions", "kibitzer-persona.md"), "# kibitzer persona fixture\n")
+      // The daemon launch spec is a required root-level artifact; the installer refuses a payload without it.
+      await writeFile(join(pluginRoot, "daemon-launch-spec.json"), '{"spec_version":1,"core":{"session_runtime":"in-process","multi_session":true,"extensions":["."]},"tunables":{},"env":{}}\n')
       // The memory run supervisor ships as its own executable artifact beside the bundle, so a
       // packed root without it is genuinely incomplete and the installer is right to reject it.
       await writeFile(join(pluginRoot, "extensions", "memory-run-supervisor.mjs"), "#!/usr/bin/env node\n")

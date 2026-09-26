@@ -49,7 +49,15 @@ export function createWorkpoolAdmission(ports: PoolManagerPorts): WorkpoolAdmiss
     const decision = decideDepthPolicy({ childDepth: start.depth, maxDepth: plan.maxDepth ?? options.config.max_depth,
       targetAgentType: agent.subagent_type ?? plan.agentType, allowedSubagents: plan.allowedSubagents ?? [] })
     if (!decision.allowed) throw new WorkpoolError("policy_denied", decision.reason)
-    const executionMode = resolveExecutionMode({ agentMode: plan.agentExecutionMode, configMode: options.config.default_execution_mode })
+    // A pool worker follows the same chain as a task child. The `auto` resolution is READ here, not
+    // awaited: pool creation is synchronous by contract, so a pool opened before this session ever
+    // ensured the daemon gets the conservative in-process default.
+    const autoMode = options.executionModeGate?.current()
+    const executionMode = resolveExecutionMode({
+      agentMode: plan.agentExecutionMode,
+      configMode: options.config.default_execution_mode,
+      ...(autoMode === undefined ? {} : { autoMode }),
+    })
     return { start: { ...start, execution_mode: executionMode }, plan }
   }
 
@@ -103,13 +111,16 @@ export function createWorkpoolAdmission(ports: PoolManagerPorts): WorkpoolAdmiss
             if (!acquired.lease.isOwner()) throw new WorkpoolError("admission_refused", "Residency admission lease was displaced.")
             // Grants are resolved AFRESH for every new worker: an existing worker never rebinds.
             const kernelTools = await resolveWorkerKernelTools(pool, ports.kernelToolBindings, options.resolveChildToolNames?.())
+            const processLaunch = pool.worker_spec.start.execution_mode === "process"
+              ? await workpoolProcessLaunch(options.store.stateDir, taskId, options.resolveInheritedExtensions)
+              : undefined
             if (!input.bind(taskId, epoch)) return
             context = prepareWorkpoolLaunch({ options, workerSpec: pool.worker_spec, taskId, hostPid: ports.hostPid,
               taskSeq: ports.nextSequence(pool.parent_session_id),
               spec: { ...pool.worker_spec.start,
                 memberScopedTools: ports.workerTools(taskId),
                 ...(kernelTools === undefined ? {} : { kernelTools }),
-                ...(pool.worker_spec.start.execution_mode === "process" ? workpoolProcessLaunch(options.store.stateDir, taskId) : {}),
+                ...(processLaunch === undefined ? {} : processLaunch),
               },
             })
           } finally { acquired.lease.release() }

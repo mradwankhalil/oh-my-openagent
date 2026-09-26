@@ -135,6 +135,14 @@ describe("plugin payload allowlist parity", () => {
     expect(uncopied).toEqual([])
   })
 
+  test("#given the daemon launch spec #when checking the payload #then it is both copied and required", () => {
+    // The spec is a root-level plugin file, so the directory copies never reach it; it has to be on
+    // the root-file list to be copied and on the required list so a payload without it fails the
+    // build instead of shipping an `omo daemon run` that exits 5.
+    expect(PAYLOAD_FILES).toContain("daemon-launch-spec.json")
+    expect(REQUIRED_PLUGIN_ARTIFACTS).toContain("daemon-launch-spec.json")
+  })
+
   test("#given the conditional x-search skill #when checking the payload #then it is both copied and required", () => {
     // when / then
     expect(PAYLOAD_DIRECTORIES).toContain("skills-conditional")

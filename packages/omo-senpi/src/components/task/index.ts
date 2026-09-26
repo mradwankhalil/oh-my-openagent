@@ -12,6 +12,7 @@ import {
   evaluateSpawnPolicy,
   isTeamMemberProcess,
   loadPiTui,
+  readSessionRole,
   resolveTeamRuntimeDirs,
   teamStorageBaseDir,
   toTeamCoreConfig,
@@ -64,6 +65,12 @@ export function createTaskComponent(options: TaskComponentOptions = {}): OmoSenp
   return {
     name: "task",
     async register(pi: SenpiExtensionAPI, ctx: ComponentContext): Promise<void> {
+      // One extension set serves every session of the shared daemon, so the component gates itself
+      // on what THIS session is. A DAG child never boots a task engine (parity with the per-child
+      // launch, which drops omo's own `-e` entry for DAG-owned children) and a team member gets the
+      // member bundle instead; every other session - parent or plain child - keeps the full surface.
+      const role = readSessionRole(pi)
+      if (role === "dag_child" || role === "member") return
       if (isTeamMemberProcess()) return
 
       // Unconditional omo process hygiene (T16): fires on session_start before any
@@ -229,7 +236,9 @@ function registerTaskTools(
     }),
   })
   pi.registerTool({ ...createTaskCancelTool({ manager }) })
-  pi.registerTool({ ...createTaskOutputTool({ manager, stateDir: engine.stateDir, resolveCallerSessionId }) })
+  pi.registerTool({
+    ...createTaskOutputTool({ manager, stateDir: engine.stateDir, resolveCallerSessionId, notices: engine.host.notices.list }),
+  })
   registerDagTool(pi, engine, dagRuntime)
   registerWorkpoolTool(pi, engine, skillInvocations, coordinator)
 }
@@ -271,6 +280,7 @@ function createTeamToolContext(
 ): TeamToolContext {
   const serviceDeps = {
     manager: engine.manager,
+    resolveInheritedExtensions: engine.resolveInheritedExtensions,
     destruction: engine.lifecycle,
     runtime: engine.runtime,
     settings: engine.settings,

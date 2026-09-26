@@ -1,5 +1,6 @@
 import type { TaskRecord } from "../state"
 import { nowIso, TERMINAL_STATUSES, type LifecycleContext } from "./context"
+import { hostSessionResumePath } from "./host-session"
 import {
   deferred,
   isClaimHeld,
@@ -33,6 +34,11 @@ export async function reconcileScopedRevival(
 
   const outcomes: ReconcileOutcome[] = []
   const sessionRecords = records.filter((record) => record.parent_session_id === parentSessionId)
+  // A daemon-hosted child NAMES its transcript on the record. The disk scan below only knows the
+  // child's own session dir, so without this a parked host session reads as "terminal with no
+  // transcript" and gets disposed - throwing away a session the daemon can still reopen.
+  const transcriptFor = (record: TaskRecord): string | undefined =>
+    hostSessionResumePath(record) ?? sessionPathFor(record.task_id)
 
   // Reclamation runs first and OUTSIDE admission. These records already occupy their slot, and a
   // killed orphan can release one for the admission batch that follows.
@@ -49,7 +55,7 @@ export async function reconcileScopedRevival(
   const excludedFromAdmission = new Set(context.reconcileAdmission.excludeTaskIds)
   for (const observed of sessionRecords) {
     if (!isSuspended(observed) || !TERMINAL_STATUSES.has(observed.status) || observed.status === "lost") continue
-    if (observed.killed === true || sessionPathFor(observed.task_id) !== undefined) continue
+    if (observed.killed === true || transcriptFor(observed) !== undefined) continue
     excludedFromAdmission.add(observed.task_id)
     const disposal = disposeSuspendedTerminalWithoutTranscript(context, observed)
     if (disposal === "disposed") {
@@ -92,7 +98,7 @@ export async function reconcileScopedRevival(
       outcomes.push(deferred(outcome.task_id, "foreign_live_owner"))
       continue
     }
-    outcomes.push(await reviveClaimed(context, claimed, priorResidency, sessionPathFor(claimed.task_id)))
+    outcomes.push(await reviveClaimed(context, claimed, priorResidency, transcriptFor(claimed)))
   }
   // A concurrent sweep may claim a candidate while this sweep waits for the admission lease. The
   // fresh selector then omits it; retain one outcome per observed candidate and report the lost CAS.

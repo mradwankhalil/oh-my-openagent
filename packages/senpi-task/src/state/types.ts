@@ -1,4 +1,43 @@
 import type { DagTaskOwner } from "../dag/owner"
+import type { IsolationBackendKind } from "@oh-my-opencode/omo-config-core"
+
+export type { IsolationBackendKind } from "@oh-my-opencode/omo-config-core"
+
+export type TaskIsolationSpec = {
+  readonly backend: IsolationBackendKind
+  // True when the chosen backend was not the preferred one, so a reader can tell a real clone from a
+  // recursive copy without re-probing the filesystem.
+  readonly fell_back?: boolean
+  readonly merged_dir: string
+  readonly base_dir: string
+  readonly mode: "patch" | "branch"
+  readonly apply: boolean
+}
+
+export type IsolationMergeKind =
+  | "applied" | "already-applied" | "not-applied" | "branch-merged" | "branch-merge-failed" | "no-changes" | "retained"
+
+export type IsolationMergeResult = {
+  readonly kind: IsolationMergeKind
+  readonly changesApplied: boolean
+  readonly duration_ms?: number
+  readonly patchPath?: string
+  readonly error?: string
+  // Why a non-completed or crash-salvaged run was retained rather than merged, so a reader can tell
+  // "the child failed" from "the host died holding the clone" long after both are terminal.
+  readonly reason?: string
+  readonly summaryPath?: string
+  readonly filesChanged?: number
+  readonly nestedPatchPaths?: readonly string[]
+  readonly branchName?: string
+  readonly partial?: boolean
+  readonly conflict?: string
+  readonly manualCommand?: string
+}
+
+export type IsolationRecord = TaskIsolationSpec & {
+  readonly merge_result?: IsolationMergeResult
+}
 
 export const TASK_STATUSES = [
   "pending",
@@ -30,6 +69,24 @@ export type ResolvedModelSource = (typeof RESOLVED_MODEL_SOURCES)[number]
 export const BACKGROUND_MODES = ["foreground", "background", "promoted"] as const
 
 export type BackgroundMode = (typeof BACKGROUND_MODES)[number]
+
+export const RUNNER_KINDS = ["child-process", "host-session"] as const
+
+export type RunnerKind = (typeof RUNNER_KINDS)[number]
+
+// Why a record is parked at a non-resident residency. Absent for the ordinary "resumes with the
+// session" suspension; set only when the daemon path gave up on a reachable host.
+export const SUSPENSION_REASONS = ["daemon_unavailable", "host_draining"] as const
+
+export type SuspensionReason = (typeof SUSPENSION_REASONS)[number]
+
+export type HostSessionIdentity = {
+  readonly socket: string
+  readonly routing_id: string
+  readonly session_path: string
+  readonly instance_id: string
+  readonly daemon_pid?: number
+}
 
 export type ResolvedModelRecord = {
   readonly provider: string
@@ -66,6 +123,9 @@ export type DurationSourceStatus = (typeof DURATION_SOURCE_STATUSES)[number]
 export type TaskRunStats = {
   readonly runtime_ms: number
   readonly turns: number
+  /** Count of assistant turns that ended in error or abort: a failed turn is not a `turn` and
+   * contributes no tokens, cost or generation time. Emitted only when greater than zero. */
+  readonly failed_turns?: number
   readonly tool_calls: number
   readonly output_tokens?: number
   /** Summed prompt tokens the provider billed as fresh (cache reads/writes are counted separately). */
@@ -119,6 +179,7 @@ export type LegacyProcessSpawnSpec = {
 // resumed process's live registries. In-process rebuild REQUIRES this shape and otherwise
 // fails spawn_spec_unavailable.
 export type SpawnSpecV1 = {
+  readonly isolation?: TaskIsolationSpec
   readonly version: 1
   readonly cwd: string
   readonly prompt: string
@@ -187,9 +248,19 @@ export type TaskRecordInput = {
   // background, or promoted to background mid-run. `notify_on_terminal` alone cannot tell the
   // last two apart. Absent on records persisted before the mode shipped.
   readonly background_mode?: BackgroundMode
+  // Kind of runner that spawned this child. child-process means the old rpc-process runner,
+  // host-session means a session of the shared daemon. Absent on records persisted before this
+  // field shipped.
+  readonly runner_kind?: RunnerKind
+  // Host session identity, present only when runner_kind is "host-session". Contains the socket
+  // path, routing id, and session path needed to reattach or probe the session. instance_id is
+  // informational (rotates on daemon handoff) - liveness and revival key on session_path +
+  // routing_id while attached.
+  readonly host_session?: HostSessionIdentity
 }
 
 export type TaskRecord = TaskRecordInput & {
+  readonly isolation?: IsolationRecord
   readonly task_id: string
   readonly status: TaskStatus
   readonly residency_state: ResidencyState
@@ -220,6 +291,14 @@ export type TaskRecord = TaskRecordInput & {
   readonly run_stats?: TaskRunStats
   readonly notification: TaskNotification
   readonly revive_delivery_uncertain?: ReviveDeliveryUncertainty
+  // Why this record is suspended, when the reason is NOT "its session went away": the daemon was
+  // unreachable for the whole bounded reconcile, or an old generation never finished draining.
+  // Cleared by the revival that succeeds.
+  readonly suspension_reason?: SuspensionReason
+  // Kind of runner that spawned this child. Absent on records persisted before this field shipped.
+  readonly runner_kind?: RunnerKind
+  // Host session identity when runner_kind is "host-session". Absent otherwise.
+  readonly host_session?: HostSessionIdentity
 }
 
 export type TaskTransition =
@@ -228,6 +307,8 @@ export type TaskTransition =
       readonly timestamp: string
       readonly pid?: number
       readonly child_session_id?: string
+      readonly runner_kind?: RunnerKind
+      readonly host_session?: HostSessionIdentity
     }
   | {
       readonly type: "complete"

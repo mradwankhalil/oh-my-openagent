@@ -2,14 +2,14 @@ import { join } from "node:path"
 
 import { log } from "@oh-my-opencode/utils"
 
-import type { ReattachResult, RespawnFailureCode, RespawnResult } from "../lifecycle/port"
+import { hostSessionResumePath, readHostDrainingHold } from "../lifecycle/host-session"
+import type { RespawnFailureCode, RespawnResult } from "../lifecycle/port"
 import { RunnerError } from "../runners/in-process/runner-error"
 import type { RpcChildHandle, RpcRunnerSpec } from "../runners/types"
 import type { TaskRecord } from "../state"
-import type { TaskRecordStore } from "../store"
 import { adaptRpcHandle, discardManagedHandle, discardRpcHandle, type ManagedChildHandle } from "./child-handle"
 import { sessionTailNeedsContinuation } from "./interrupted-turn"
-import { buildRespawnManagedSpec, isTerminalRecord, nowIso } from "./manager-helpers"
+import { buildRespawnManagedSpec, isTerminalRecord } from "./manager-helpers"
 import type { ManagedRunner, TrustedRespawnLaunchResolver } from "./types"
 
 const CONTINUATION_MESSAGE =
@@ -121,6 +121,9 @@ async function respawnProcess(input: {
 }): Promise<RespawnResult> {
   const spawnSpec = input.record.spawn_spec
   if (spawnSpec === undefined) return failure("unrecoverable", "spawn_spec_unavailable", "persisted spawn spec unavailable")
+  // A daemon-hosted child resumes the session path its RECORD carries: the daemon owns that
+  // transcript, so the newest file in the child's session dir can be the wrong one (or missing).
+  const sessionPath = hostSessionResumePath(input.record) ?? input.sessionPath
   let handle: RpcChildHandle | undefined
   try {
     const trusted = input.trustedLaunch === undefined ? undefined : await input.trustedLaunch(input.record)
@@ -130,25 +133,46 @@ async function respawnProcess(input: {
       cwd: spawnSpec.cwd,
       state_dir: join(input.stateDir, "children", input.record.task_id),
       prompt: "",
-      resumeSessionPath: input.sessionPath,
+      resumeSessionPath: sessionPath,
       model: input.record.model,
       ...(input.record.resolved_model?.variant === undefined ? {} : { variant: input.record.resolved_model.variant }),
       ...(trusted?.extensions === undefined ? {} : { extensions: trusted.extensions }),
       ...(trusted?.memberEnv === undefined ? {} : { memberEnv: trusted.memberEnv }),
     })
+    // An ATTACHED daemon session is the same live session, mid-turn and all: switching it would
+    // reopen what is already open, and a continuation nudge would inject a second prompt into a
+    // turn that never stopped. A reopened (evicted/parked) session still gets both.
+    if (isAttachedHostSession(handle)) return { ok: true, handle: adaptRpcHandle(handle) }
     if (handle.switchSession === undefined) return cleanupFailure(handle, "respawned RPC handle cannot switch sessions")
-    const switched = await handle.switchSession(input.sessionPath)
+    const switched = await handle.switchSession(sessionPath)
     if (switched.cancelled) return cleanupFailure(handle, "switch_session was cancelled")
-    await continueInterruptedTurn(input.record, input.sessionPath, adaptRpcHandle(handle))
+    await continueInterruptedTurn(input.record, sessionPath, adaptRpcHandle(handle))
     return { ok: true, handle: adaptRpcHandle(handle) }
   } catch (error) {
     const cleaned = handle === undefined || await disposeRpc(handle)
     if (isTeamRuntimeUnavailable(error)) {
       return failure("retryable", "team_inactive", "team runtime is not active")
     }
+    // The old generation still holds this session path while it drains. That is a wait the
+    // lifecycle retries, never a lost child.
+    const hold = readHostDrainingHold(error)
+    if (hold !== undefined) {
+      return {
+        ok: false,
+        disposition: "retryable",
+        code: "host_draining",
+        reason: error instanceof Error ? error.message : String(error),
+        ...(hold.retryAfterMs === undefined ? {} : { retryAfterMs: hold.retryAfterMs }),
+      }
+    }
     log("senpi-task rpc respawn failed", { taskId: input.record.task_id, error: String(error) })
     return failure("retryable", "respawn_failed", cleaned ? "rpc respawn failed" : RESPAWN_CLEANUP_FAILURE_REASON)
   }
+}
+
+/** A session the daemon still held when this child re-opened it: re-joined, not restarted. */
+function isAttachedHostSession(handle: RpcChildHandle): boolean {
+  return "kind" in handle && handle.kind === "host-session" && (handle as { attached?: unknown }).attached === true
 }
 
 async function continueInterruptedTurn(record: TaskRecord, sessionPath: string, handle: ManagedChildHandle): Promise<void> {
@@ -201,67 +225,4 @@ function failure(
   reason: string,
 ): RespawnResult {
   return { ok: false, disposition, code, reason }
-}
-
-export async function reattachManagedTask(input: {
-  readonly record: TaskRecord
-  readonly handle: ManagedChildHandle
-  readonly store: TaskRecordStore
-  readonly hostPid: number
-  readonly now: () => number
-  readonly isAttached: (taskId: string) => boolean
-  readonly attachLive: (record: TaskRecord, handle: ManagedChildHandle) => () => void
-  readonly detachLive: (taskId: string, handle: ManagedChildHandle, unsubscribe: () => void) => void
-  readonly destroyAttached: (taskId: string) => Promise<void>
-  readonly armOutcome: (record: TaskRecord, handle: ManagedChildHandle, epoch: number) => void
-}): Promise<ReattachResult> {
-  const fresh = input.store.load(input.record.task_id)
-  if (fresh?.host_pid !== input.hostPid || fresh.residency_state !== "resident") {
-    await discardManagedHandle(input.handle)
-    return { ok: false, kind: "failed", reason: "task ownership claim is not held by this host" }
-  }
-  if (input.isAttached(fresh.task_id)) {
-    await discardManagedHandle(input.handle)
-    return { ok: false, kind: "already_attached", reason: "task already has a live handle" }
-  }
-  let unsubscribe: (() => void) | undefined
-  let attached = false
-  try {
-    unsubscribe = input.attachLive(fresh, input.handle)
-    attached = true
-    if (isTerminalRecord(fresh)) {
-      const pid = input.handle.pid
-      const sessionId = input.handle.sessionId
-      if (pid !== undefined || (sessionId !== undefined && sessionId.length > 0)) {
-        input.store.mutate(fresh.task_id, (current) => ({
-          ...current,
-          ...(pid === undefined ? {} : { pid }),
-          ...(sessionId === undefined || sessionId.length === 0 ? {} : { child_session_id: sessionId }),
-        }))
-      }
-      return { ok: true }
-    }
-    const { error_message: _error, final_response: _final, killed: _killed, ...rest } = fresh
-    const epoch = fresh.notification.run_epoch + 1
-    const timestamp = nowIso(input.now)
-    const sessionId = input.handle.sessionId
-    const reattached: TaskRecord = {
-      ...rest,
-      status: "running",
-      started_at: fresh.started_at ?? timestamp,
-      updated_at: timestamp,
-      notification: { ...fresh.notification, run_epoch: epoch },
-      ...(input.handle.pid === undefined ? {} : { pid: input.handle.pid }),
-      ...(sessionId === undefined || sessionId.length === 0 ? {} : { child_session_id: sessionId }),
-    }
-    input.store.replace(reattached)
-    input.armOutcome(reattached, input.handle, epoch)
-    return { ok: true }
-  } catch (error) {
-    if (attached) await input.destroyAttached(fresh.task_id)
-    else await discardManagedHandle(input.handle)
-    if (unsubscribe !== undefined) input.detachLive(fresh.task_id, input.handle, unsubscribe)
-    log("senpi-task reattach failed", { taskId: fresh.task_id, error: String(error) })
-    return { ok: false, kind: "failed", reason: "manager reattach failed" }
-  }
 }

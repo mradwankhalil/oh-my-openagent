@@ -27,7 +27,15 @@ import { z } from "zod"
 import { engineSidecarSources, resolvePackageDir, senpiPackageDir, type SidecarSource } from "./engine-sidecar-sources"
 import nativeFixture from "./release-binary-native-fixture.json"
 import { senpiWorkerCompileArgs } from "./senpi-worker-compile"
-import { parseBuildInfo, type OmoBuildInfo } from "../packages/omo-native/build-info"
+import { parseBuildInfo, type EngineBuildStamp, type OmoBuildInfo } from "../packages/omo-native/build-info"
+import {
+  compileDefinesForOmoBinary,
+  engineBuildDefineArgs,
+  omoBinaryEngineStamp,
+  releaseEngineBuildStamp,
+} from "./engine-build-defines"
+
+export { compileDefinesForOmoBinary }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(scriptDir, "..")
@@ -167,11 +175,18 @@ export function relPathForEmbeddedName(embeddedName: string): string | undefined
 }
 
 /** Stamped sibling package.json the engine reads for its version contract. */
-export function createStampedPackageJson(omoAiVersion: string, buildInfo?: OmoBuildInfo): string {
-  const stamped = buildInfo === undefined
-    ? { name: "omo", version: omoAiVersion }
-    : { name: "omo", version: omoAiVersion, omoBuild: buildInfo }
-  return `${JSON.stringify(stamped, null, 2)}\n`
+export function createStampedPackageJson(
+  omoAiVersion: string,
+  buildInfo?: OmoBuildInfo,
+  engineBuild?: EngineBuildStamp,
+): string {
+  if (buildInfo !== undefined) {
+    return `${JSON.stringify({ name: "omo", version: omoAiVersion, omoBuild: buildInfo }, null, 2)}\n`
+  }
+  if (engineBuild !== undefined && engineBuild.scheme === "epoch") {
+    return `${JSON.stringify({ name: "omo", version: omoAiVersion, engineBuild }, null, 2)}\n`
+  }
+  return `${JSON.stringify({ name: "omo", version: omoAiVersion }, null, 2)}\n`
 }
 
 /** Lists every file under `stageDir` as sorted POSIX-relative paths. */
@@ -203,6 +218,7 @@ export interface RuntimeManifest {
   readonly enginePin: string
   readonly manifestSha: string
   readonly buildInfo?: OmoBuildInfo
+  readonly engineBuild?: EngineBuildStamp
   readonly entries: readonly RuntimeManifestEntry[]
 }
 
@@ -213,7 +229,12 @@ function sha256OfFile(filePath: string): string {
 /** Builds the embedded runtime manifest for a staged payload directory. */
 export async function buildRuntimeManifest(
   stageDir: string,
-  options: { readonly omoAiVersion: string; readonly enginePin: string; readonly buildInfo?: OmoBuildInfo },
+  options: {
+    readonly omoAiVersion: string
+    readonly enginePin: string
+    readonly buildInfo?: OmoBuildInfo
+    readonly engineBuild?: EngineBuildStamp
+  },
 ): Promise<RuntimeManifest> {
   const entries: RuntimeManifestEntry[] = collectStagedFiles(stageDir)
     .filter((relPath) => relPath !== RUNTIME_MANIFEST_REL_PATH)
@@ -229,14 +250,23 @@ export async function buildRuntimeManifest(
         size: stats.size,
       }
     })
+  const releaseEngineBuild =
+    options.engineBuild !== undefined && options.engineBuild.scheme === "epoch"
+      ? options.engineBuild
+      : undefined
   const digestPayload = options.buildInfo === undefined
-    ? { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, entries }
+    ? releaseEngineBuild === undefined
+      ? { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, entries }
+      : { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, engineBuild: releaseEngineBuild, entries }
     : { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, buildInfo: options.buildInfo, entries }
   const manifestSha = createHash("sha256").update(JSON.stringify(digestPayload)).digest("hex")
-  if (options.buildInfo === undefined) {
-    return { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, manifestSha, entries }
+  if (options.buildInfo !== undefined) {
+    return { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, manifestSha, buildInfo: options.buildInfo, entries }
   }
-  return { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, manifestSha, buildInfo: options.buildInfo, entries }
+  if (releaseEngineBuild !== undefined) {
+    return { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, manifestSha, engineBuild: releaseEngineBuild, entries }
+  }
+  return { omoAiVersion: options.omoAiVersion, enginePin: options.enginePin, manifestSha, entries }
 }
 
 /** Fails loud when a compiled binary exceeds the per-binary size budget. */
@@ -314,7 +344,7 @@ export function reportEmbeddedPayload(stageDir: string): EmbeddedPayloadReport {
 
 // Mirrors PAYLOAD_DIRECTORIES / PAYLOAD_FILES in script/build-omo-native.ts (locked by build-omo-binary.test.ts).
 export const PLUGIN_PAYLOAD_DIRECTORIES = ["extensions", "skills", "skills-conditional", "runtime"] as const
-export const PLUGIN_PAYLOAD_FILES = ["package.json", "CHANGELOG.md", "README.md", "NOTICE", "LICENSE"] as const
+export const PLUGIN_PAYLOAD_FILES = ["package.json", "CHANGELOG.md", "README.md", "NOTICE", "LICENSE", "daemon-launch-spec.json"] as const
 
 const EXPORT_HTML_KEEP = new Set([
   "template.html",
@@ -528,7 +558,8 @@ export function stageSidecarPayload(
 ): string[] {
   mkdirSync(stageDir, { recursive: true })
   const staged = new Set<string>()
-  writeFileSync(join(stageDir, "package.json"), createStampedPackageJson(omoAiVersion, buildInfo), "utf8")
+  const releaseEngineBuild = releaseEngineBuildStamp(omoBinaryEngineStamp(buildInfo, senpiPackageDir))
+  writeFileSync(join(stageDir, "package.json"), createStampedPackageJson(omoAiVersion, buildInfo, releaseEngineBuild), "utf8")
   staged.add("package.json")
   for (const source of engineSidecarSources()) stageSource(source, stageDir, staged)
   stagePluginPayload(stageDir, staged)
@@ -570,12 +601,14 @@ export async function buildReleaseBinary(
     // spelling. Basename is preserved, so embedded names stay
     // `${EMBEDDED_PAYLOAD_ROOT}/<relPath>`.
     const stageDir = realpathSync(stagedRoot)
+    const stamp = omoBinaryEngineStamp(options.buildInfo, senpiPackageDir)
     stageSidecarPayload(target, stageDir, options.omoAiVersion, options.buildInfo)
 
     const manifest = await buildRuntimeManifest(stageDir, {
       omoAiVersion: options.omoAiVersion,
       enginePin: target.enginePin,
       buildInfo: options.buildInfo,
+      engineBuild: releaseEngineBuildStamp(stamp),
     })
     writeFileSync(
       join(stageDir, RUNTIME_MANIFEST_REL_PATH),
@@ -617,6 +650,7 @@ export async function buildReleaseBinary(
           `--asset=${stageDir}`,
           compileEntry,
           ...senpiWorkerCompileArgs(repoRoot),
+          ...engineBuildDefineArgs(stamp),
           "--outfile",
           binaryPath,
         ],

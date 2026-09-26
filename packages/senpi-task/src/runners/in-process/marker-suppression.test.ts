@@ -31,7 +31,10 @@ function makeParentTool(name: string, onExecute: () => void): ToolDefinition {
 }
 
 describe("in-process child extension suppression", () => {
-  test("#given an agent dir with a marker extension #when a child boots through the runner #then the factory never runs and parent tools survive", async () => {
+  // On win32 the positive control itself fails: DefaultResourceLoader does not execute the
+  // agent-dir marker there, so the suppression assertion cannot be proven on that platform.
+  // Tracked in #8444; the gate goes away when the control holds on the Windows shard.
+  test.skipIf(process.platform === "win32")("#given an agent dir with a marker extension #when a child boots through the runner #then the factory never runs and parent tools survive", async () => {
     // given
     const rootDir = mkdtempSync(join(tmpdir(), "senpi-task-runner-marker-"))
     const agentDir = join(rootDir, "agent")

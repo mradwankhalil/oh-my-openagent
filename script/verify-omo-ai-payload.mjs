@@ -23,6 +23,8 @@ const REQUIRED_ARTIFACTS = [
   "plugin/runtime/ast-grep-mcp/cli.js",
   "plugin/runtime/dag/sdk.js",
   "plugin/runtime/agent-toolkit-sdk/sdk.js",
+  // omo doctor / omo setup classify task-category coverage through it (bin/lib/category-coverage.js).
+  "plugin/runtime/category-coverage/index.js",
 ]
 
 const MIN_SKILL_COUNT = 18

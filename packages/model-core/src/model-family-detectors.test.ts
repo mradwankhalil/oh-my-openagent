@@ -12,8 +12,10 @@ import {
   isGptModel,
   isGrok45Model,
   isGrok46Model,
+  isKimiK2CodeModel,
   isKimiK2Model,
   isKimiK27Model,
+  isKimiK28Model,
   isKimiK3Model,
   isMiniMaxModel,
   isSWE2Model,
@@ -51,6 +53,29 @@ describe("model family detectors", () => {
     expect(isKimiK27Model("kimi-for-coding/k2p5")).toBe(false)
     expect(isKimiK27Model("anthropic/claude-opus-4-7")).toBe(false)
     expect(isKimiK2Model("opencode-go/kimi-k2.7")).toBe(true)
+  })
+
+  test("#given Kimi K2.8 model ids #then detects K2.8 and the Kimi Code rolling ids by version", () => {
+    expect(isKimiK28Model("moonshotai/kimi-k2.8")).toBe(true)
+    expect(isKimiK28Model("opencode-go/kimi-k2-8")).toBe(true)
+    expect(isKimiK28Model("kimi-for-coding/k2p8")).toBe(true)
+    expect(isKimiK28Model("kimi-for-coding/kimi-for-coding")).toBe(true)
+    expect(isKimiK28Model("kimi-for-coding/kimi-for-coding-highspeed")).toBe(false)
+    expect(isKimiK28Model("opencode-go/kimi-k2.7")).toBe(false)
+    expect(isKimiK28Model("anthropic/claude-opus-4-7")).toBe(false)
+    expect(isKimiK27Model("kimi-for-coding/kimi-for-coding-highspeed")).toBe(true)
+    expect(isKimiK27Model("kimi-for-coding/kimi-for-coding")).toBe(false)
+  })
+
+  test("#given the Kimi K2 coding family #then K2.7 and K2.8 share it and K2.6 stays out", () => {
+    expect(isKimiK2CodeModel("opencode-go/kimi-k2.7")).toBe(true)
+    expect(isKimiK2CodeModel("kimi-for-coding/k2p7")).toBe(true)
+    expect(isKimiK2CodeModel("moonshotai/kimi-k2.8")).toBe(true)
+    expect(isKimiK2CodeModel("kimi-for-coding/kimi-for-coding")).toBe(true)
+    expect(isKimiK2CodeModel("kimi-for-coding/kimi-for-coding-highspeed")).toBe(true)
+    expect(isKimiK2CodeModel("moonshotai/kimi-k2.6")).toBe(false)
+    expect(isKimiK2CodeModel("opencode-go/kimi-k3")).toBe(false)
+    expect(isKimiK2CodeModel("anthropic/claude-opus-4-7")).toBe(false)
   })
 
   test("#given Kimi K3 model ids #then detects K3 only, not K2.x", () => {

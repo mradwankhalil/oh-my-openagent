@@ -1,6 +1,7 @@
 import type { TaskRecord } from "../state"
 import { TERMINAL_STATUSES, type LifecycleContext } from "./context"
 import { destroyResidentTask } from "./destroy"
+import { isHostSessionRecord } from "./host-session"
 import type { CleanupResult } from "./types"
 
 /**
@@ -33,6 +34,9 @@ export async function cleanupExpiredRecords(context: LifecycleContext): Promise<
     deleted.push(taskId)
   }
 
+  // ONE daemon snapshot for the whole sweep: every host-session record below is matched against it
+  // by session path, never probed on its own.
+  context.hostSessionProbe.refresh()
   const cutoff = context.now() - context.config.ttl_ms
   for (const record of context.store.list().records) {
     if (shouldRetain(context, record, cutoff)) {
@@ -46,11 +50,18 @@ export async function cleanupExpiredRecords(context: LifecycleContext): Promise<
       retained.push(record.task_id)
       continue
     }
-    // The record is now committed to deletion. A live orphan rpc pid must not outlive its record:
-    // destroy it through the single-writer port BEFORE phase 2 artifact deletion (no-orphan law).
-    const orphanPid = outcome.record.execution_mode === "process" ? outcome.record.pid : undefined
-    if (orphanPid !== undefined && context.signaller.isAlive(orphanPid)) {
-      await destroyResidentTask(context, record.task_id, "ttl", orphanPid)
+    // The record is now committed to deletion. A live orphan must not outlive its record: destroy
+    // it through the single-writer port BEFORE phase 2 artifact deletion (no-orphan law). A daemon
+    // session that is still live is CLOSED; one the daemon already parked needs nothing at all.
+    if (isHostSessionRecord(outcome.record)) {
+      if (await context.hostSessionProbe.sessionLive(outcome.record.host_session)) {
+        await destroyResidentTask(context, record.task_id, "ttl", { record: outcome.record })
+      }
+    } else {
+      const orphanPid = outcome.record.execution_mode === "process" ? outcome.record.pid : undefined
+      if (orphanPid !== undefined && context.signaller.isAlive(orphanPid)) {
+        await destroyResidentTask(context, record.task_id, "ttl", { pid: orphanPid })
+      }
     }
     // Phase 2: children dir, spill, log, then drop the tombstone. An expunged record can never be
     // revived, so its runtime parent kernel-tool binding goes with it.

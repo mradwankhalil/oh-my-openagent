@@ -1,6 +1,6 @@
 import type { ManagedChildHandle } from "../manager/child-handle"
 import type { ColdRevivalFailureCode, DetachedRevivalResult, DetachedRevivalRollbackResult } from "../lifecycle/port"
-import type { TaskRecord, TaskRunStats, TaskStatus } from "../state"
+import type { HostSessionIdentity, TaskRecord, TaskRunStats, TaskStatus } from "../state"
 import type { TaskRecordStore } from "../store"
 
 export type DestructionCause = "cancel" | "cancel_without_abort" | "fallback_handoff" | "revive_failure"
@@ -27,6 +27,9 @@ export type SteeringPort = {
   reserveForRevive(taskId: string): ReviveReservation
   reserveForDetachedRevive?(record: TaskRecord): ReviveReservation
   reviveDetached?(taskId: string, reservation?: ReviveReservation): Promise<DetachedRevivalResult>
+  // Whether the daemon hosting a parked child still answers. Absent when this process has no
+  // daemon view at all, which reads as "unreachable" - the conservative answer.
+  isDaemonReachable?(hostSession: HostSessionIdentity): boolean
   rollbackDetachedRevival?(prior: TaskRecord): DetachedRevivalRollbackResult
   readonly destruction: DestructionPort
   // Snapshot of the manager-owned run-stats accumulator for a live task, attached to the cancel

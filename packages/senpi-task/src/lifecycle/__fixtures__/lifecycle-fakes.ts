@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { OmoTaskSettingsSchema, type OmoTaskSettings } from "@oh-my-opencode/omo-config-core"
 
-import type { ResidencyState, TaskRecord, TaskStatus } from "../../state"
+import type { HostSessionIdentity, ResidencyState, RunnerKind, TaskRecord, TaskStatus } from "../../state"
 import { createTaskRecordStore } from "../../store"
 import type { TaskRecordStore } from "../../store"
 import type { ResidentHandle, ResidencyRegistry } from "../port"
@@ -40,6 +40,9 @@ export type SeedInput = {
   readonly notify_on_terminal?: boolean
   readonly notified_epoch?: number
   readonly notification_failed_epoch?: number
+  readonly runner_kind?: RunnerKind
+  readonly host_session?: HostSessionIdentity
+  readonly spawn_spec?: TaskRecord["spawn_spec"]
 }
 
 // Write a persisted record at an exact status/residency/timestamp so lifecycle logic can be driven
@@ -67,6 +70,9 @@ export function seedRecord(store: TaskRecordStore, input: SeedInput): TaskRecord
         : {}),
     },
     ...(input.killed === true ? { killed: true } : {}),
+    ...(input.runner_kind === undefined ? {} : { runner_kind: input.runner_kind }),
+    ...(input.host_session === undefined ? {} : { host_session: input.host_session }),
+    ...(input.spawn_spec === undefined ? {} : { spawn_spec: input.spawn_spec }),
     ...(input.pid !== undefined ? { pid: input.pid } : {}),
     ...(input.child_session_id !== undefined ? { child_session_id: input.child_session_id } : {}),
     ...(input.host_pid !== undefined ? { host_pid: input.host_pid } : {}),
@@ -85,7 +91,7 @@ export type FakeHandle = ResidentHandle & {
 
 export function fakeHandle(
   taskId: string,
-  kind: "in-process" | "rpc",
+  kind: ResidentHandle["kind"],
   order: CallLog,
   options: { pid?: number; abortRejects?: boolean; disposeRejects?: boolean } = {},
 ): FakeHandle {

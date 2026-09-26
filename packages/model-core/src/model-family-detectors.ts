@@ -69,11 +69,38 @@ export function isKimiK2Model(model: string): boolean {
   return false
 }
 
+/**
+ * Kimi Code addresses its models by rolling product ids that carry no version
+ * signal. Moonshot upgraded `kimi-for-coding` to K2.8 Preview in place on
+ * 2026-09-11 and left `kimi-for-coding-highspeed` on K2.7 Code HighSpeed.
+ * https://www.kimi.com/code/docs/en/kimi-code/models.html (checked 2026-09-18)
+ */
+const KIMI_CODE_K27_MODEL_ID = "kimi-for-coding-highspeed"
+const KIMI_CODE_K28_MODEL_ID = "kimi-for-coding"
+
 export function isKimiK27Model(model: string): boolean {
   const modelName = extractModelName(model).toLowerCase()
+  if (modelName === KIMI_CODE_K27_MODEL_ID) return true
   if (/kimi-k2[.\-]?7/.test(modelName)) return true
   if (/k2[-.]?p7/.test(modelName)) return true
   return false
+}
+
+export function isKimiK28Model(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase()
+  if (modelName === KIMI_CODE_K28_MODEL_ID) return true
+  if (/kimi-k2[.\-]?8/.test(modelName)) return true
+  if (/k2[-.]?p8/.test(modelName)) return true
+  return false
+}
+
+/**
+ * K2.7 Code and K2.8 Preview share one prompt. K2.8 is an efficiency and
+ * context upgrade inside the same K2 coding family, not a new prompting
+ * contract, so every prompt-routing site treats the two as one family.
+ */
+export function isKimiK2CodeModel(model: string): boolean {
+  return isKimiK27Model(model) || isKimiK28Model(model)
 }
 
 export function isKimiK3Model(model: string): boolean {

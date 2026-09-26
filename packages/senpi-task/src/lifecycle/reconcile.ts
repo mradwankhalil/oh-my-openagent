@@ -1,6 +1,13 @@
+import { log } from "@oh-my-opencode/utils"
+
+import { processOwnerProbe } from "@oh-my-opencode/isolation-core"
+
+import { needsCrashSalvage, salvageCrashedIsolation, sweepIsolations } from "../isolation"
 import { markRecordLostForReconciliation, type TaskRecord } from "../state"
 import { nowIso, TERMINAL_STATUSES, type LifecycleContext } from "./context"
 import { destroyResidentTask } from "./destroy"
+import { isHostSessionRecord } from "./host-session"
+import { reconcileHostSessionOrphan } from "./host-session-revive"
 import { getLifecycleReattachPorts } from "./port"
 import { beginLocalReclamation, reconcileScopedRevival } from "./reconcile-revival"
 import { reclaimOrphanedResident } from "./residency"
@@ -18,6 +25,9 @@ export async function reconcileOnSessionStart(
 ): Promise<ReconcileResult> {
   const outcomes: ReconcileOutcome[] = []
   const candidates: TaskRecord[] = []
+  // ONE daemon snapshot per pass: every host-session record below is matched against it by session
+  // path, so a hundred children still cost one probeHost and one list_sessions.
+  context.hostSessionProbe.refresh()
 
   // Ownership is checked before terminality, residency, or mode. A live sibling owns the record in
   // every status and this process must not mutate it.
@@ -44,6 +54,7 @@ export async function reconcileOnSessionStart(
       if (isSuspended(record)) continue
       outcomes.push(await reconcileLegacyRecord(context, record))
     }
+    await reclaimIsolations(context)
     return { outcomes }
   }
 
@@ -70,6 +81,7 @@ export async function reconcileOnSessionStart(
     candidates.filter((record) => record.parent_session_id === parentSessionId),
     (taskId) => newestSessionPath(context, taskId),
   ))
+  await reclaimIsolations(context)
   return { outcomes }
 }
 
@@ -111,6 +123,10 @@ async function reconcileLegacyRecordExclusive(context: LifecycleContext, observe
   }
 
   if (TERMINAL_STATUSES.has(record.status)) return reconcileLegacyTerminal(context, record)
+
+  // A daemon-hosted child has no pid at all. Its liveness is the daemon plus its session path, and
+  // "the daemon is gone" parks it - the pid-shaped path below would mark it lost for having no pid.
+  if (isHostSessionRecord(record)) return reconcileHostSessionOrphan(context, record)
 
   if (record.execution_mode !== "process") {
     await markLost(context, record.task_id, "in-process task from a previous process cannot be reattached")
@@ -183,6 +199,12 @@ async function reattachLegacyRecord(
   record: TaskRecord,
   sessionPath: string,
 ): Promise<ReconcileOutcome> {
+  // The legacy process path reserves and respawns directly, so the reviveClaimed guard never sees
+  // it: an isolated record must be stopped HERE or it is relaunched inside a reclaimed clone.
+  if (record.isolation !== undefined) {
+    await markLost(context, record.task_id, "isolated record is never respawned")
+    return { task_id: record.task_id, kind: "lost", reason: "isolated_not_revivable" }
+  }
   const ports = context.reattachPorts ?? getLifecycleReattachPorts(context.store)
   if (ports === undefined) {
     await markLost(context, record.task_id, "reattach ports unavailable")
@@ -262,4 +284,26 @@ async function markLost(context: LifecycleContext, taskId: string, message: stri
     context.store.appendEvent(taskId, { type: "reconcile_lost", payload: { reason: message } })
   }
   if (record?.residency_state === "resident") await destroyResidentTask(context, taskId, "reconcile_lost")
+}
+
+// Startup order is load-bearing: records are reconciled FIRST so a crashed child is terminal, then
+// its delta is salvaged while the clone still exists, and only then may the sweep reclaim clones
+// whose owner is provably gone. Reversing salvage and sweep would delete unreviewed work.
+async function reclaimIsolations(context: LifecycleContext): Promise<void> {
+  const runtime = context.isolation
+  if (runtime === undefined) return
+  const records = context.store.list().records
+  for (const record of records) {
+    if (!needsCrashSalvage(record, (candidate) => TERMINAL_STATUSES.has(candidate.status))) continue
+    try {
+      await salvageCrashedIsolation({ runtime, stateDir: context.store.stateDir, mutate: context.store.mutate }, record)
+    } catch (error) {
+      log("senpi-task isolation crash salvage failed", { taskId: record.task_id, error: String(error) })
+    }
+  }
+  try {
+    await sweepIsolations(runtime, context.store.list().records, context.isolationProbe ?? processOwnerProbe)
+  } catch (error) {
+    log("senpi-task isolation sweep failed", { error: String(error) })
+  }
 }

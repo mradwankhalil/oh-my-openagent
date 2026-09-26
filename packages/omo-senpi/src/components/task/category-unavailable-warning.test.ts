@@ -24,7 +24,7 @@ type CapturedNotify = {
 
 const QUICK_CHAIN: readonly DelegateFallbackEntry[] = [
   { providers: ["kimi-coding", "kimi-for-coding"], model: "kimi-for-coding-highspeed" },
-  { providers: ["openai"], model: "gpt-5.6-luna-fast", variant: "minimal" },
+  { providers: ["openai"], model: "gpt-6-luna-fast", variant: "minimal" },
 ]
 
 function deadChainError(category: string): PlanResolutionError {
@@ -86,7 +86,7 @@ function plan(planner: ChildPlanner, category: string): PlanResolution {
 }
 
 const EXPECTED_TEXT =
-  'Category "quick" has no usable model: none of its fallback-chain providers are connected (kimi-coding, kimi-for-coding).'
+  'Category "quick" has no usable model: none of its fallback-chain providers are connected (kimi-coding, kimi-for-coding). Connect one with /login, or pin categories.quick.model in omo.json.'
 
 describe("createCategoryUnavailableWarningPlanner", () => {
   test("#given a dead-chain model_unavailable #when planned #then it notifies and sends the custom message", () => {
@@ -231,6 +231,6 @@ describe("createCategoryUnavailableWarningPlanner", () => {
     expect(result.error.code).toBe("model_unavailable")
     expect(result.error.category).toBe("quick")
     expect(result.error.attempted_chain).toBeDefined()
-    expect(result.error.missing_providers).toContain("openai-codex")
+    expect(result.error.missing_providers).toContain("chatgpt-subscription")
   })
 })

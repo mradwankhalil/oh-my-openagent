@@ -16,6 +16,7 @@ type HandleCalls = {
 function rpcHandle(calls: HandleCalls, hasTerminatePort: boolean): ManagedChildHandle {
   const base: ManagedChildHandle = {
     task_id: "st_rpc",
+    kind: "rpc",
     sessionId: "child-session",
     pid: 4321,
     steer: () => Promise.resolve(),
@@ -36,6 +37,30 @@ function rpcHandle(calls: HandleCalls, hasTerminatePort: boolean): ManagedChildH
       calls.terminate += 1
       return Promise.resolve()
     },
+  }
+}
+
+// A daemon-hosted child: no pid at all, and `terminate` is the handle's abort + close_session.
+function hostSessionHandle(calls: HandleCalls): ManagedChildHandle {
+  return {
+    task_id: "st_host",
+    kind: "host-session",
+    sessionId: "daemon-session",
+    pid: undefined,
+    steer: () => Promise.resolve(),
+    followUp: () => Promise.resolve(),
+    abort: () => {
+      calls.abort += 1
+      return Promise.resolve()
+    },
+    subscribe: () => () => undefined,
+    waitForOutcome: () => Promise.resolve({ status: "completed", finalResponse: "done" }),
+    lastAssistantText: () => undefined,
+    terminate: () => {
+      calls.terminate += 1
+      return Promise.resolve()
+    },
+    dispose: () => Promise.resolve(),
   }
 }
 
@@ -99,6 +124,28 @@ describe("createManagerResidencyRegistry rpc teardown bridge", () => {
     const calls: HandleCalls = { abort: 0, terminate: 0 }
     const resident = registryFor(rpcHandle(calls, true)).get("st_rpc")
     if (resident === undefined) throw new TypeError("expected rpc resident fixture")
+
+    // when
+    await resident.terminate()
+
+    // then
+    expect(calls).toEqual({ abort: 0, terminate: 1 })
+  })
+
+  it("#given a daemon-hosted resident #when the registry adapts it #then its kind comes from the handle, not from the absent pid", () => {
+    // given / when
+    const resident = registryFor(hostSessionHandle({ abort: 0, terminate: 0 })).get("st_host")
+
+    // then
+    expect(resident?.kind).toBe("host-session")
+    expect(resident?.pid).toBeUndefined()
+  })
+
+  it("#given a daemon-hosted resident #when lifecycle terminates it #then the session close reaches the handle instead of being a no-op", async () => {
+    // given
+    const calls: HandleCalls = { abort: 0, terminate: 0 }
+    const resident = registryFor(hostSessionHandle(calls)).get("st_host")
+    if (resident === undefined) throw new TypeError("expected host-session resident fixture")
 
     // when
     await resident.terminate()

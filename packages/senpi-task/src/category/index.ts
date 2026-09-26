@@ -10,6 +10,7 @@ export {
   isCategoryChainViable,
   isCategoryGateSatisfied,
 } from "./builtins"
+export { resolveCategoryCoverage, type CategoryCoverage, type UnusableCategory } from "./coverage"
 export { resolveAvailableCategoryNames, resolveCategory } from "./resolver"
 export type {
   BuiltinCategoryDefinition,
