@@ -23,6 +23,7 @@ const GENERATED_PATHS = [
   "packages/omo-senpi/plugin/extensions/",
   "packages/omo-senpi/plugin/scripts/install.mjs",
   "packages/omo-codex/scripts/install-dist/",
+  "packages/omo-senpi/plugin/runtime/",
 ]
 const isGenerated = (line) => GENERATED_PATHS.some((prefix) => line.slice(3).startsWith(prefix))
 
@@ -61,7 +62,9 @@ try {
   fail(`FAIL: ${repo} is not a git repository.`, 1)
 }
 
-const dirty = git(["status", "--porcelain"])
+// Not via git(): its trim() would eat the leading space of the first porcelain line
+// (" M path" -> "M path"), shifting slice(3) in isGenerated() off the path.
+const dirty = execFileSync("git", ["status", "--porcelain"], quiet)
   .split("\n")
   .filter((line) => line.trim().length > 0)
   .filter((line) => !isGenerated(line))
