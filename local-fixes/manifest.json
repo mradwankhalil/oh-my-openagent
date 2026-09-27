@@ -193,17 +193,17 @@
       "orderNote": "Depends on 11's cancellationRequested field. Keep last. Covered by PR #8167 (commit 924555133), which also carries 11 in dependency order."
     },
     {
-      "id": "14-opencode-v2-compaction-event-alias",
+      "id": "15-opencode-v2-compaction-event-alias",
       "title": "Bridge v2 compaction/idle event names to the v1 hook surface",
       "commit": "bce3fe471",
-      "patch": "patches/14-opencode-v2-compaction-event-alias.patch",
+      "patch": "patches/15-opencode-v2-compaction-event-alias.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/9016",
       "why": "OpenCode v2 renamed session.compacted to session.compaction.ended and never emits session.idle, so the v1 event handlers behind fixes 01-04 (token-cache clear, post-compaction monitor, manual-compaction continue) silently never fire on v2. The graft aliases compaction.ended to a v1-shaped session.compacted for v1 event handlers and accepts session.execution.succeeded as the terminal idle signal.",
       "markers": [
         "session.execution.succeeded"
       ],
       "overlapsWith": [],
-      "orderNote": "Patches packages/omo-opencode/src/v2/hook-bridge.ts, which only exists after PR #9016 merges. Apply last; no interaction with fixes 01-12 (different files)."
+      "orderNote": "Patches packages/omo-opencode/src/v2/hook-bridge.ts, which only exists after PR #9016 merges. Apply last; no interaction with fixes 01-12 (different files). Numbered 15 because the v1 line claimed #14 (compaction-context-injector working-model fix, session ses_f26289d0)."
     }
   ],
   "externalFixes": [
