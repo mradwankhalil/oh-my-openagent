@@ -76,7 +76,9 @@ async function continueAfterManualCompaction(
     }, output)
     if (event.properties.reason === "manual" && output.enabled !== false) state.pendingManualContinue.add(sessionID)
   }
-  if (event.type === "session.idle" && state.pendingManualContinue.has(sessionID)) {
+  // fix 14 (opencode-v2): v2 never emits "session.idle" — a succeeded
+  // execution is the terminal signal that the post-compaction turn finished.
+  if ((event.type === "session.idle" || event.type === "session.execution.succeeded") && state.pendingManualContinue.has(sessionID)) {
     state.pendingManualContinue.delete(sessionID)
     await ctx.session.prompt({ sessionID, text: "Continue." })
   }
@@ -273,6 +275,15 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?: 
           const event = toV1Event(raw)
           noteRuntimeEvent(state, event)
           if (eventHandler) await safeCall("event", () => eventHandler({ event }))
+          // fix 14 (opencode-v2): v2 emits "session.compaction.ended" where v1
+          // emitted "session.compacted". Alias it so v1-era handlers (the
+          // preemptive-compaction token-cache clear and post-compaction
+          // monitor) still fire on v2.
+          if (eventHandler && event.type === "session.compaction.ended") {
+            await safeCall("event", () => eventHandler({
+              event: { type: "session.compacted", properties: { sessionID: event.properties.sessionID } },
+            }))
+          }
           await safeCall("compaction.autocontinue", () => continueAfterManualCompaction(ctx, state, event, autocontinue))
         }
       } catch (error) {
