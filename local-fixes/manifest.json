@@ -16,8 +16,13 @@
       "patch": "patches/01-hijack-autocontinue-reroute.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8397",
       "why": "OpenCode's synthetic post-compaction continue inherited the summarize request's model, so an agent whose compaction.model differs from the running model made the compaction model continue the task.",
-      "markers": ["compaction-autocontinue-reroute", "pickActiveSessionMessage"],
-      "overlapsWith": ["02-hijack-working-model"],
+      "markers": [
+        "compaction-autocontinue-reroute",
+        "pickActiveSessionMessage"
+      ],
+      "overlapsWith": [
+        "02-hijack-working-model"
+      ],
       "orderNote": "Adds plugin/compaction-autocontinue-reroute.ts. 02 refines the same file, so 02 must come after 01."
     },
     {
@@ -27,8 +32,13 @@
       "patch": "patches/02-hijack-working-model.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8397",
       "why": "The first fix resolved 'working model' from the newest message carrying agent+model fields, which matched compaction summaries and the internal compaction_continue prompts themselves — a self-sustaining loop that silently switched live sessions to the summarizer model.",
-      "markers": ["isInternalContinuationMessage", "pickActiveSessionMessage"],
-      "overlapsWith": ["01-hijack-autocontinue-reroute"],
+      "markers": [
+        "isInternalContinuationMessage",
+        "pickActiveSessionMessage"
+      ],
+      "overlapsWith": [
+        "01-hijack-autocontinue-reroute"
+      ],
       "orderNote": "Modifies the file added by 01. Keep after 01."
     },
     {
@@ -38,8 +48,12 @@
       "patch": "patches/03-empty-summary-guard.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8473",
       "why": "An abandoned summarize never latched the session, so the next tool call after the cooldown recomputed the ratio from the stale pre-compaction measurement and started another compaction; one fired at a real fill of 7 percent.",
-      "markers": ["Compaction produced an empty summary"],
-      "overlapsWith": ["04-compaction-pin-resolution"],
+      "markers": [
+        "Compaction produced an empty summary"
+      ],
+      "overlapsWith": [
+        "04-compaction-pin-resolution"
+      ],
       "orderNote": "Touches preemptive-compaction-trigger.ts, which 04 also rewrites. Keep 03 before 04."
     },
     {
@@ -49,8 +63,14 @@
       "patch": "patches/04-compaction-pin-resolution.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8511",
       "why": "agents.<key>.compaction.model silently fell back to the session model on every failure path with no logging, and the failure log printed the SESSION model — a dead pin looked exactly like a working one. Four production compactions ran on the session model while the config pinned GLM.",
-      "markers": ["summarize model resolved", "releasing a stalled summarize guard", "no-compaction-pin"],
-      "overlapsWith": ["03-empty-summary-guard"],
+      "markers": [
+        "summarize model resolved",
+        "releasing a stalled summarize guard",
+        "no-compaction-pin"
+      ],
+      "overlapsWith": [
+        "03-empty-summary-guard"
+      ],
       "orderNote": "This is the local-lineage form, which builds on 03's empty-summary module. PR #8511 ships an equivalent port written against dev (commit eb15543ea) that does not depend on 03 — if 03 ever merges upstream, prefer that one instead. Keep after 03.",
       "portCommit": "eb15543ea"
     },
@@ -61,7 +81,9 @@
       "patch": "patches/05-background-agent-liveness.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8512",
       "why": "session-activity.ts detached an SDK method (const sessionGet = client.session.get), so this._client was undefined and every read degraded to unavailable — which suppresses stale interruption — with no completion watchdog. Two review tasks stranded for six hours.",
-      "markers": ["Task exceeded the hard deadline"],
+      "markers": [
+        "Task exceeded the hard deadline"
+      ],
       "overlapsWith": [],
       "orderNote": "Independent of 01-04. Safe anywhere in the order."
     },
@@ -72,8 +94,13 @@
       "patch": "patches/06-provider-retry-bound.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
       "why": "A retryable provider error (HTTP 503) let the todo-continuation enforcer re-dispatch indefinitely, burning tokens against a provider that was down. Adds isRetryableProviderError() and bounds consecutive retries.",
-      "markers": ["isRetryableProviderError"],
-      "overlapsWith": ["07-pause-after-provider-failure", "08-preserve-failure-streak"],
+      "markers": [
+        "isRetryableProviderError"
+      ],
+      "overlapsWith": [
+        "07-pause-after-provider-failure",
+        "08-preserve-failure-streak"
+      ],
       "orderNote": "Adds the handler/session-state/types surface that 07 and 08 build on. Keep first."
     },
     {
@@ -83,8 +110,13 @@
       "patch": "patches/07-pause-after-provider-failure.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
       "why": "Continuation kept firing after the provider had already failed repeatedly. Idle events now consult the provider-failure boundary and honour the recovery window instead of resuming immediately.",
-      "markers": ["failureResetWindowElapsed"],
-      "overlapsWith": ["06-provider-retry-bound", "08-preserve-failure-streak"],
+      "markers": [
+        "failureResetWindowElapsed"
+      ],
+      "overlapsWith": [
+        "06-provider-retry-bound",
+        "08-preserve-failure-streak"
+      ],
       "orderNote": "Depends on 06's session-state fields. Keep after 06."
     },
     {
@@ -94,8 +126,12 @@
       "patch": "patches/08-preserve-failure-streak.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
       "why": "Non-idle events reset consecutiveProviderFailures to 0, so any unrelated event defeated the retry bound added by 06 and the failure loop continued.",
-      "markers": ["consecutiveProviderFailures"],
-      "overlapsWith": ["06-provider-retry-bound"],
+      "markers": [
+        "consecutiveProviderFailures"
+      ],
+      "overlapsWith": [
+        "06-provider-retry-bound"
+      ],
       "orderNote": "Touches non-idle-events.ts only. Keep after 06."
     },
     {
@@ -106,7 +142,9 @@
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/7490",
       "why": "Type-only fix: ContinuationProgressUpdate and SessionStateStore were imported from the wrong modules, so the 07/08 surface failed typecheck.",
       "markers": [],
-      "overlapsWith": ["07-pause-after-provider-failure"],
+      "overlapsWith": [
+        "07-pause-after-provider-failure"
+      ],
       "orderNote": "Import alignment for the 07/08 surface. Keep after 08. Deliberately has NO markers: it only touches a test file and a type-only import, both erased before bundling, so no string from it can ever appear in dist/index.js and a marker would make the step-4 bundle check fail forever. Applied by cherry-pick; not bundle-verifiable by design."
     },
     {
@@ -116,7 +154,9 @@
       "patch": "patches/10-first-prompt-watchdog.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "The runtime-fallback watchdog fired before a slow provider produced its first token, swapping out a healthy-but-slow model mid-request. Raises the default to 180s.",
-      "markers": ["DEFAULT_FIRST_PROMPT_WATCHDOG_MS"],
+      "markers": [
+        "DEFAULT_FIRST_PROMPT_WATCHDOG_MS"
+      ],
       "overlapsWith": [],
       "orderNote": "Independent of 06-09. Covered by PR #8167, whose title mentions only the cancellation race and never the watchdog - do NOT judge coverage by title. Its commit there is d63e1baef."
     },
@@ -127,8 +167,12 @@
       "patch": "patches/11-cancel-explicit-state.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "Adds cancellationRequested to the background task type so the manager can tell a real user cancel apart from an idle-event race.",
-      "markers": ["cancellationRequested"],
-      "overlapsWith": ["12-cancel-lifecycle-events"],
+      "markers": [
+        "cancellationRequested"
+      ],
+      "overlapsWith": [
+        "12-cancel-lifecycle-events"
+      ],
       "orderNote": "Types-only change that 12 consumes. Keep before 12. Covered by PR #8167 (commit 100715c38) together with 12."
     },
     {
@@ -138,9 +182,28 @@
       "patch": "patches/12-cancel-lifecycle-events.patch",
       "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/8167",
       "why": "A cancellation racing an idle event dropped the task's terminal lifecycle events, so downstream consumers never observed the task finishing. Defers, replays, or discards them deterministically instead.",
-      "markers": ["deferCancellationEvent", "replayCancellationEvents", "discardCancellationEvents"],
-      "overlapsWith": ["11-cancel-explicit-state"],
+      "markers": [
+        "deferCancellationEvent",
+        "replayCancellationEvents",
+        "discardCancellationEvents"
+      ],
+      "overlapsWith": [
+        "11-cancel-explicit-state"
+      ],
       "orderNote": "Depends on 11's cancellationRequested field. Keep last. Covered by PR #8167 (commit 924555133), which also carries 11 in dependency order."
+    },
+    {
+      "id": "14-opencode-v2-compaction-event-alias",
+      "title": "Bridge v2 compaction/idle event names to the v1 hook surface",
+      "commit": "bce3fe471",
+      "patch": "patches/14-opencode-v2-compaction-event-alias.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/9016",
+      "why": "OpenCode v2 renamed session.compacted to session.compaction.ended and never emits session.idle, so the v1 event handlers behind fixes 01-04 (token-cache clear, post-compaction monitor, manual-compaction continue) silently never fire on v2. The graft aliases compaction.ended to a v1-shaped session.compacted for v1 event handlers and accepts session.execution.succeeded as the terminal idle signal.",
+      "markers": [
+        "session.execution.succeeded"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Patches packages/omo-opencode/src/v2/hook-bridge.ts, which only exists after PR #9016 merges. Apply last; no interaction with fixes 01-12 (different files)."
     }
   ],
   "externalFixes": [
@@ -149,7 +212,10 @@
       "title": "squeez wrap must not leave a tool call pending on timeout",
       "path": "C:\\Users\\Zephyrus\\.config\\opencode\\plugins\\squeez.js",
       "why": "squeez prints its timeout notice but never returns control for wsl.exe commands (one call held a tool for 21,893s). The plugin now injects a supervisor for WSL commands only: bounded wait, taskkill /F /T /PID, exit 124.",
-      "markers": ["WaitForExit", "taskkill /F /T /PID"],
+      "markers": [
+        "WaitForExit",
+        "taskkill /F /T /PID"
+      ],
       "verifyWith": "node C:\\Users\\Zephyrus\\.config\\opencode\\tests\\squeez-plugin.test.mjs",
       "note": "Not part of the OMO repo; unaffected by an OMO update."
     },
@@ -161,7 +227,11 @@
       "fixCommit": "b855924e87db342c69a3a4c26beefc77f4cdc858",
       "base": "v1.18.32",
       "why": "prompt.ts passed parentID: lastUser.id when creating the compaction summary. If a prompt landed between the compaction marker and the summary creation, the summary was orphaned (compaction loop) and the marker's model (a plugin-supplied pin) was discarded. Anchoring to the marker fixes both symptoms.",
-      "markers": ["configured-compaction-agent", "request-marker", "marker already carries a completed summary"],
+      "markers": [
+        "configured-compaction-agent",
+        "request-marker",
+        "marker already carries a completed summary"
+      ],
       "verifyWith": "cd C:\\Users\\Zephyrus\\Documents\\ai\\opencode-core-fix && bun run fixes:verify",
       "note": "Not part of the OMO repo. Has its own ledger at opencode-core-fix/local-fixes. Upgrades: bun run fixes:apply <version> rebuilds from the new tag, re-applies the immutable fix commit, gates on the test file + 3 binary markers, and stages to a stable filename. v1.x ONLY - the pipeline refuses v2+. OpenChamber is pinned to the staged binary by the User env var OPENCODE_BINARY (read at startup); opencodeBinary in ~/.config/openchamber/settings.json is cosmetic and gets dropped on settings rewrites."
     }

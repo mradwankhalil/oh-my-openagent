@@ -1,0 +1,56 @@
+From bce3fe4712a8fd9bb1d1e5cb47d23e8cfa0fc531 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 28 Sep 2026 00:23:06 +0300
+Subject: [PATCH] fix(v2-bridge): alias session.compaction.ended to v1
+ session.compacted; treat execution.succeeded as idle
+
+OpenCode v2 renamed/removed two session lifecycle events the v1 hook
+surface depends on:
+- v1 "session.compacted" is v2 "session.compaction.ended". The bridge
+  passed it through untranslated, so v1-era event handlers (preemptive
+  compaction token-cache clear, post-compaction monitor) never fired.
+  Now the v1 event handler additionally receives a session.compacted
+  alias carrying the sessionID.
+- v1 "session.idle" has no v2 emission; the manual-compaction continue
+  queued in pendingManualContinue never fired. v2's terminal signal is
+  "session.execution.succeeded", now accepted alongside session.idle.
+
+Verified: tsgo --noEmit clean.
+---
+ packages/omo-opencode/src/v2/hook-bridge.ts | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/packages/omo-opencode/src/v2/hook-bridge.ts b/packages/omo-opencode/src/v2/hook-bridge.ts
+index 2f67619c9..2ef941f94 100644
+--- a/packages/omo-opencode/src/v2/hook-bridge.ts
++++ b/packages/omo-opencode/src/v2/hook-bridge.ts
+@@ -76,7 +76,9 @@ async function continueAfterManualCompaction(
+     }, output)
+     if (event.properties.reason === "manual" && output.enabled !== false) state.pendingManualContinue.add(sessionID)
+   }
+-  if (event.type === "session.idle" && state.pendingManualContinue.has(sessionID)) {
++  // fix 14 (opencode-v2): v2 never emits "session.idle" — a succeeded
++  // execution is the terminal signal that the post-compaction turn finished.
++  if ((event.type === "session.idle" || event.type === "session.execution.succeeded") && state.pendingManualContinue.has(sessionID)) {
+     state.pendingManualContinue.delete(sessionID)
+     await ctx.session.prompt({ sessionID, text: "Continue." })
+   }
+@@ -273,6 +275,15 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?:
+           const event = toV1Event(raw)
+           noteRuntimeEvent(state, event)
+           if (eventHandler) await safeCall("event", () => eventHandler({ event }))
++          // fix 14 (opencode-v2): v2 emits "session.compaction.ended" where v1
++          // emitted "session.compacted". Alias it so v1-era handlers (the
++          // preemptive-compaction token-cache clear and post-compaction
++          // monitor) still fire on v2.
++          if (eventHandler && event.type === "session.compaction.ended") {
++            await safeCall("event", () => eventHandler({
++              event: { type: "session.compacted", properties: { sessionID: event.properties.sessionID } },
++            }))
++          }
+           await safeCall("compaction.autocontinue", () => continueAfterManualCompaction(ctx, state, event, autocontinue))
+         }
+       } catch (error) {
+-- 
+2.55.0.windows.3
+
