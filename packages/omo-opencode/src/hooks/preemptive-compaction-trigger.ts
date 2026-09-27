@@ -4,6 +4,7 @@ import {
   type ContextLimitModelCacheState,
 } from "../shared/context-limit-resolver"
 import { log } from "../shared/logger"
+import { clearActiveCompactionPin, setActiveCompactionPin } from "../shared/compaction-pin-state"
 
 import { resolveCompactionModelDecision } from "./shared/compaction-model-resolver"
 import { resolveEmptySummaryFromSession } from "./preemptive-compaction-empty-summary"
@@ -144,6 +145,10 @@ export async function runPreemptiveCompactionIfNeeded(args: {
       usageRatio: Number(usageRatio.toFixed(4)),
     })
 
+    // fix: compaction-pin-checkpoint — record the summarize target so the
+    // context-injector checkpoint capture can exclude it from the working model.
+    setActiveCompactionPin(sessionID, { providerID: decision.providerID, modelID: decision.modelID })
+
     const summarizePromise = ctx.client.session.summarize({
       path: { id: sessionID },
       body: { providerID: decision.providerID, modelID: decision.modelID, auto: true },
@@ -155,6 +160,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
       if (summarizeStartedAt.get(sessionID)?.attemptID !== attempt.attemptID) return
       compactionInProgress.delete(sessionID)
       summarizeStartedAt.delete(sessionID)
+      clearActiveCompactionPin(sessionID)
     }
     void summarizePromise.then(releaseInProgress, releaseInProgress)
 
