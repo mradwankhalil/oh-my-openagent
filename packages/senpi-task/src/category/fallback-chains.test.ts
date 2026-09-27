@@ -46,8 +46,8 @@ describe("CATEGORY_FALLBACK_CHAINS", () => {
         { providers: ["chatgpt-subscription", "openai", "opencode"], model: "gpt-5.6-sol", variant: "max" }
       ],
       "deep-low": [
-        { providers: ["chatgpt-subscription", "openai"], model: "gpt-6-sol-fast", variant: "medium" },
-        { providers: ["chatgpt-subscription", "openai", "github-copilot", "opencode"], model: "gpt-6-sol", variant: "medium" }
+        { providers: ["chatgpt-subscription", "openai"], model: "gpt-5.6-sol-fast", variant: "medium" },
+        { providers: ["chatgpt-subscription", "openai", "github-copilot", "opencode"], model: "gpt-5.6-sol", variant: "medium" }
       ],
       "deep-high": [
         { providers: ["chatgpt-subscription", "openai", "github-copilot", "opencode"], model: "gpt-6-astra", variant: "xhigh" }
@@ -81,7 +81,6 @@ describe("CATEGORY_FALLBACK_CHAINS", () => {
         { providers: ["kimi-coding", "kimi-for-coding", "moonshotai", "opencode-go"], model: "kimi-k3", variant: "max" }
       ],
       writing: [
-        { providers: ["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"], model: "claude-fable-5-1", variant: "low" },
         { providers: ["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"], model: "claude-opus-5-5", variant: "low" },
         { providers: ["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"], model: "claude-opus-4-6", variant: "max" }
       ]

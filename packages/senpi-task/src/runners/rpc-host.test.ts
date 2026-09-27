@@ -141,7 +141,9 @@ describe("RpcHostRunner fallback", () => {
           new HostUnavailableError("capability", { fallbackAllowed: true, detail: "missing session_context" }),
         ),
       fallback,
-      onWarning: (message) => warnings.push(message),
+      onWarning: (message) => {
+        warnings.push(message)
+      },
     })
 
     // when

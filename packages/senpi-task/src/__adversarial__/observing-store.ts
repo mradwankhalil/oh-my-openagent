@@ -80,6 +80,7 @@ export function createObservingStore(backing: TaskRecordStore, shared?: StoreObs
     },
     tombstoneIfExpired: (taskId, shouldRetain) => backing.tombstoneIfExpired(taskId, shouldRetain),
     completeExpunge: (taskId) => backing.completeExpunge(taskId),
+    loadExpunging: (taskId) => backing.loadExpunging(taskId),
     listExpunging: () => backing.listExpunging(),
     replace: (record) => {
       const before = backing.load(record.task_id)

@@ -71,6 +71,9 @@ export type TaskRecordStore = {
   // already committed to deletion and is never resurrected, so completion is idempotent and needs
   // no lock.
   readonly completeExpunge: (taskId: string) => void
+  // Read the committed tombstone so crash recovery can repeat daemon-session teardown before
+  // deleting children/<taskId>. Callers handle parse failures per tombstone and still finish phase 2.
+  readonly loadExpunging: (taskId: string) => TaskRecord | null
   // Task ids with a leftover <taskId>.json.expunging tombstone from a sweep that crashed between
   // the phases. Every TTL sweep completes phase 2 for these before doing anything else.
   readonly listExpunging: () => readonly string[]

@@ -115,4 +115,35 @@ describe("RpcHostRunner memory admission", () => {
     expect(fallback.starts).toEqual([])
     expect(host.sessions()).toHaveLength(0)
   })
+
+  test("#given one start waited on memory pressure #when a later unrelated start fails #then the pressure note does not outlive its admission episode", async () => {
+    // given
+    const host = await fakeHost({
+      openFailure: { code: "host_memory_pressure", data: { rssMb: 8300, retry_after_ms: 30_000 } },
+    })
+    const notes = new Map<string, string>()
+    const runner = runnerOver(host, {
+      onWarning: (message) => {
+        const token = message.split(" ")[0] ?? message
+        notes.set(token, message)
+        return () => {
+          notes.delete(token)
+        }
+      },
+      sleep: () => {
+        host.failOpen(undefined)
+        return Promise.resolve()
+      },
+    })
+    const first = await runner.start(childSpec())
+    await first.terminate()
+    host.failOpen({ code: "open_failed" })
+
+    // when
+    const failure = await runner.start(childSpec()).catch((error: unknown) => error)
+
+    // then
+    expect(failure).toMatchObject({ failure: { kind: "session_unavailable" } })
+    expect([...notes.values()]).toEqual([])
+  })
 })

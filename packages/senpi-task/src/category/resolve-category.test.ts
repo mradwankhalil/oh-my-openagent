@@ -42,13 +42,13 @@ const gpt56CategoryCases = [
   },
   {
     category: "deep",
-    modelId: "gpt-6-sol",
+    modelId: "gpt-5.6-sol",
     nativeVariant: "medium",
-    mixedWinner: { provider: "github-copilot", modelId: "gpt-6-sol", variant: "medium" },
+    mixedWinner: { provider: "github-copilot", modelId: "gpt-5.6-sol", variant: "medium" },
     copilotVariant: "medium",
     copilotFallbackEntry: {
       providers: ["chatgpt-subscription", "openai", "github-copilot", "opencode"] as string[],
-      model: "gpt-6-sol",
+      model: "gpt-5.6-sol",
       variant: "medium",
     },
   },
@@ -271,9 +271,9 @@ describe("resolveCategory", () => {
     })
   })
 
-  test("#given writing's Fable 5.1 default is unavailable and Opus 5.5 is available #when resolved #then the Opus 5.5 rung is selected at low", () => {
+  test("#given writing's Opus 5.5 default is unavailable and Opus 4.6 is available #when resolved #then the Opus 4.6 rung is selected at max", () => {
     // given
-    const models = registry([model("anthropic", "claude-opus-5-5")])
+    const models = registry([model("anthropic", "claude-fable-5-1"), model("anthropic", "claude-opus-4-6")])
 
     // when
     const result = resolveCategory("writing", {}, models)
@@ -281,13 +281,13 @@ describe("resolveCategory", () => {
     // then
     const resolved = expectResolved(result)
     expect(resolved.spec.provider).toBe("anthropic")
-    expect(resolved.spec.modelId).toBe("claude-opus-5-5")
-    expect(resolved.spec.variant).toBe("low")
+    expect(resolved.spec.modelId).toBe("claude-opus-4-6")
+    expect(resolved.spec.variant).toBe("max")
     expect(resolved.modelSelection.matchedFallback).toBe(true)
     expect(resolved.modelSelection.fallbackEntry).toEqual({
       providers: ["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"],
-      model: "claude-opus-5-5",
-      variant: "low",
+      model: "claude-opus-4-6",
+      variant: "max",
     })
   })
 
@@ -480,20 +480,20 @@ describe("builtin category defaults", () => {
       ["visual-engineering", "anthropic/claude-fable-5-1", "max"],
       ["artistry", "anthropic/claude-fable-5-1", "max"],
       ["ultrabrain", "chatgpt-subscription/gpt-6-astra", "max"],
-      ["deep-low", "chatgpt-subscription/gpt-6-sol-fast", "medium"],
+      ["deep-low", "chatgpt-subscription/gpt-5.6-sol-fast", "medium"],
       ["deep-high", "chatgpt-subscription/gpt-6-astra", "xhigh"],
       ["quick", "chatgpt-subscription/gpt-6-luna-fast", "low"],
       ["unspecified-low", "xiaomi/mimo-v2.6-pro", "max"],
       ["unspecified-high", "anthropic/claude-opus-5-5", "medium"],
       ["architect", "anthropic/claude-fable-5-1", "max"],
-      ["writing", "anthropic/claude-fable-5-1", "low"],
+      ["writing", "anthropic/claude-opus-5-5", "low"],
     ])
 
     // then: availability gating applies only to the model-gated builtins; any listed id opens the gate
     expect(BUILTIN_CATEGORY_REQUIRES_MODEL).toEqual({
       architect: ["claude-fable-5-1"],
       ultrabrain: ["gpt-6-astra", "gpt-5.6-sol"],
-      "deep-low": ["gpt-6-sol-fast", "gpt-6-sol"],
+      "deep-low": ["gpt-5.6-sol-fast", "gpt-5.6-sol"],
       "deep-high": ["gpt-6-astra"],
     })
   })

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { canonicalAgentDir } from "./agent-dir.js"
-import { packageManifest, packageRoot, readJson, resolveSenpi, updateTarget } from "./package-paths.js"
+import { packageManifest, packageRoot, readJson, releaseChannel, resolveSenpi, updateTarget } from "./package-paths.js"
 import { daemonReportLines } from "./daemon.js"
 import { migrationReport } from "./doctor-migration.js"
 import { needsSetupSuggestion } from "./setup-detect.js"
@@ -16,7 +16,7 @@ const NPM_FETCH_TIMEOUT_MS = 5000
 // synchronous and turns any network failure into "could not check".
 
 export function installedDistTag(version) {
-  return typeof version === "string" && version.includes("beta") ? "beta" : "latest"
+  return releaseChannel(version)
 }
 
 export function latestFromDistTags(distTags, version) {
@@ -433,8 +433,8 @@ export function runDoctor(inventory, args = [], options = {}) {
   lines.push(...staleEngineReport(options))
   lines.push(...retiredPayloadReport(options))
   lines.push(...transientMemoryReport(options))
-  lines.push(...daemonReport(options))
-  lines.push(...(options.categoryCoverage ?? []))
+  lines.push(...daemonReport(options), ...(options.computerUse ?? []), ...(options.categoryCoverage ?? []))
+  if ((options.computerUse ?? []).some((line) => line.startsWith("FAIL "))) failed = true
   if (needsSetupSuggestion(inventory)) {
     lines.push("INFO no credentials found; run omo setup to review sibling stores")
   }

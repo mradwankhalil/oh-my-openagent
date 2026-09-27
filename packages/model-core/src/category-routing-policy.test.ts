@@ -44,10 +44,10 @@ describe("category routing policy", () => {
       },
     ])
     expect(low.fallbackChain).toEqual([
-      { providers: ["openai", "chatgpt-subscription"], model: "gpt-6-sol-fast", variant: "medium" },
+      { providers: ["openai", "chatgpt-subscription"], model: "gpt-5.6-sol-fast", variant: "medium" },
       {
         providers: ["openai", "chatgpt-subscription", "github-copilot", "opencode"],
-        model: "gpt-6-sol",
+        model: "gpt-5.6-sol",
         variant: "medium",
       }
     ])
@@ -194,11 +194,6 @@ describe("category routing policy", () => {
       }
     ])
     expect(writingChain).toEqual([
-      {
-        providers: ["anthropic", "anthropic-api", "github-copilot", "opencode"],
-        model: "claude-fable-5-1",
-        variant: "low",
-      },
       {
         providers: ["anthropic", "anthropic-api", "github-copilot", "opencode"],
         model: "claude-opus-5-5",

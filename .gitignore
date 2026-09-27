@@ -75,3 +75,6 @@ plans/
 !.omo/fixtures/**
 !.omo/init-deep.json
 dist.bak-*/
+
+# Rust workspace (crates/senpi-desktop-*)
+/target

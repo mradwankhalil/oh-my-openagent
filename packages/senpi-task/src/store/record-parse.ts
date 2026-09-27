@@ -19,6 +19,10 @@ import {
   readOptionalSuspensionReason,
   validateHostSessionConsistency,
 } from "./record-blocks-parse"
+import {
+  readOptionalTaskStartFailureKind,
+  readOptionalTaskStartFailureReason,
+} from "./start-failure-parse"
 import { parseRunStats } from "./run-stats-parse"
 import {
   isRecord,
@@ -74,6 +78,8 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
   const reviveDeliveryUncertain = parseOptionalReviveDeliveryUncertainty(value)
   const runnerKind = readOptionalRunnerKind(value)
   const suspensionReason = readOptionalSuspensionReason(value)
+  const failureKind = readOptionalTaskStartFailureKind(value)
+  const failureReason = readOptionalTaskStartFailureReason(value)
   const hostSession = parseOptionalHostSession(value)
   validateHostSessionConsistency(runnerKind, hostSession)
 
@@ -118,6 +124,8 @@ export function parseTaskRecord(value: unknown, path: string, warnings?: string[
     ...(finalResponse === undefined ? {} : { final_response: finalResponse }),
     ...(isolation === undefined ? {} : { isolation }),
     ...(errorMessage === undefined ? {} : { error_message: errorMessage }),
+    ...(failureKind === undefined ? {} : { failure_kind: failureKind }),
+    ...(failureReason === undefined ? {} : { failure_reason: failureReason }),
     ...(killed === undefined ? {} : { killed }),
     ...(runStats === undefined ? {} : { run_stats: runStats }),
     ...(taskSeq === undefined ? {} : { task_seq: taskSeq }),

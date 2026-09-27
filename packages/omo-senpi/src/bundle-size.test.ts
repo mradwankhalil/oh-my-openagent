@@ -73,7 +73,19 @@ const builtExtensionPath = join(packageRoot, "plugin", "extensions", "omo.js")
 // and this branch rebuilds to 1,260,200 (+58,012, +4.8%), so the growth is attributable to the versions
 // and not to the build host. 1,300,000 keeps ~3.2% headroom rather than the failing value. Trimming it
 // back needs a lazy-load or split of the inlined validator, which is a refactor and not a version bump.
-const BUDGET_BYTES = 1_300_000
+// Raised 1,300,000 -> 1,340,000 for model-profile request-auth (#8881): the session-start walk gains
+// the two-stage credential probe (`request-auth.ts`: per-account resolution honoring a pin, then the
+// model's request configuration, plus the redacting diagnostic) and the surface-aware notice module
+// (`notice.ts`). First-party code only - the dependency manifests are unchanged and bundle-purity stays
+// green. dev measured 1,297,500 with 2,500 bytes of slack left under the previous ceiling; this branch
+// measures 1,301,126 after minification (macOS arm64, bun 1.4.2). 1,340,000 keeps ~3% headroom rather
+// than the failing value.
+// Raised 1,340,000 -> 1,420,000 for computer use (#8893): the `computer-use` component and the first-party
+// `@oh-my-opencode/senpi-desktop-{protocol,engine,prelude,service,tool}` workspaces enter the entry (the
+// computer tool, its eval-kernel prelude assets, the engine client and runtime). Their only third-party
+// dependency, typebox, was already inlined; bundle-purity stays green. Measured 1,380,186 bytes after
+// minification (darwin/arm64, bun 1.4.2); 1,420,000 keeps ~2.9% headroom rather than the failing value.
+const BUDGET_BYTES = 1_420_000
 
 describe("omo-senpi bundle size budget", () => {
   it("#given the built extension #when its byte size is measured #then it stays within the documented byte budget", () => {

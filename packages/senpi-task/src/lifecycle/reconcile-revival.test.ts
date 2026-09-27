@@ -159,6 +159,34 @@ describe("reconcileOnSessionStart scoped revival", () => {
     expect(harness.signals).toHaveLength(0)
   })
 
+  test("#given a host-session record with a live daemon pid but no live session #when reconciled #then session liveness decides ownership", async () => {
+    // given
+    const store = tempStore()
+    const record = seedRecord(store, {
+      task_id: "st_1000001c",
+      parent_session_id: parentSessionId,
+      status: "running",
+      residency_state: "resident",
+      execution_mode: "process",
+      runner_kind: "host-session",
+      host_pid: 3333,
+      host_session: {
+        socket: "/tmp/senpi.sock",
+        routing_id: "route-1",
+        session_path: "/tmp/session.jsonl",
+        instance_id: "instance-1",
+      },
+    })
+    const harness = injectedHarness({ store, alive: new Set([3333]) })
+
+    // when
+    const result = await harness.lifecycle.reconcileOnSessionStart(parentSessionId)
+
+    // then
+    expect(result.outcomes.find((entry) => entry.task_id === record.task_id)?.kind).not.toBe("deferred")
+    expect(harness.signals).toHaveLength(0)
+  })
+
   test("#given a suspended child of another session #when this session resumes #then the other child is untouched", async () => {
     // given
     const harness = injectedHarness()

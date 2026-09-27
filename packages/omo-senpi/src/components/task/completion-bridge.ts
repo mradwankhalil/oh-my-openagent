@@ -54,6 +54,7 @@ export function createCompletionObservingStore(backing: TaskRecordStore, deps: C
     // lifecycle.cleanupExpiredRecords works through the wrapper (no notify on tombstone/expunge).
     tombstoneIfExpired: (taskId, shouldRetain) => backing.tombstoneIfExpired(taskId, shouldRetain),
     completeExpunge: (taskId) => backing.completeExpunge(taskId),
+    loadExpunging: (taskId) => backing.loadExpunging(taskId),
     listExpunging: () => backing.listExpunging(),
   }
 }

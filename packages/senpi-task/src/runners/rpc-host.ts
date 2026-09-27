@@ -4,15 +4,17 @@ import { randomUUID } from "node:crypto"
 import { log } from "@oh-my-opencode/utils"
 
 import type { HostEnginePolicy } from "../lazy/senpi-barrel"
-import { asSenpiThinkingLevel } from "../senpi/thinking-level"
 import { RunnerError } from "./in-process/runner-error"
 import { HostUnavailableError, ensureTaskDaemon, type EnsureTaskDaemonInput, type EnsuredTaskDaemon } from "./rpc-host/daemon"
 import { createHostSessionHandle } from "./rpc-host/handle"
 import type { HostSessionChildHandle, HostSessionIdentity, HostSessionPort } from "./rpc-host/handle-port"
 import type { HostSessionReattach, HostSessionReattached } from "./rpc-host/reattach"
-import { HostSessionClient, HostSessionOpenError, type OpenedHostSession } from "./rpc-host/session-client"
-import { buildChildContext, resolveChildSessionPath } from "./rpc-host/session-context"
+import { HostSessionClient, type OpenedHostSession } from "./rpc-host/session-client"
+import { openHostSessionWithAdmission } from "./rpc-host/admission"
+import { openTaskHostSession } from "./rpc-host/open-session"
+import { resolveChildSessionPath } from "./rpc-host/session-context"
 import type { HostSessionOpenInput } from "./rpc-host/session-transport"
+import { isHostTransportError } from "./rpc-host/transport-error"
 import { createRpcModelAdmission, type RpcModelAdmission } from "./rpc/model-admission"
 import { discardUnstartedRpcHandle } from "./rpc/start-cleanup"
 import type { RpcChildHandle, RpcEntriesResult, RpcRunnerSpec, RpcSwitchSessionResult } from "./types"
@@ -23,8 +25,6 @@ const DEFAULT_CLOSE_GRACE_MS = 5_000
 const DEFAULT_REATTACH_DELAYS_MS: readonly number[] = [500, 1_000, 2_000, 4_000, 8_000]
 /** How long a start may wait for a memory-critical host to admit a new worker session. */
 const DEFAULT_ADMISSION_WAIT_MS = 10 * 60_000
-const HOST_MEMORY_PRESSURE = "host_memory_pressure"
-const DEFAULT_PRESSURE_RETRY_MS = 30_000
 
 /** ONE child's session on the daemon: the port the handle drives, plus the calls the runner makes. */
 export interface HostSessionChannel extends HostSessionPort {
@@ -54,7 +54,7 @@ export type RpcHostRunnerOptions = {
   readonly heartbeatIntervalMs?: number
   readonly closeGraceMs?: number
   readonly fallback?: FallbackChildRunner
-  readonly onWarning?: (message: string) => void
+  readonly onWarning?: (message: string) => void | (() => void)
   readonly now?: () => number
   readonly reattachDelaysMs?: readonly number[]
   readonly admissionWaitMs?: number
@@ -89,7 +89,7 @@ export class RpcHostRunner {
   private readonly modelAdmission: RpcModelAdmission
   private readonly inheritedExtensions: readonly string[]
   private readonly now: () => number
-  private readonly onWarning: (message: string) => void
+  private readonly onWarning: (message: string) => void | (() => void)
   private readonly warned = new Set<string>()
   private readonly reattachDelaysMs: readonly number[]
   private readonly admissionWaitMs: number
@@ -114,16 +114,22 @@ export class RpcHostRunner {
         ? { ...specInput, extensions: this.inheritedExtensions }
         : specInput
     await this.modelAdmission(spec)
+    let daemon: EnsuredTaskDaemon
     try {
-      const daemon = await this.ensureDaemon({
+      daemon = await this.ensureDaemon({
         agentDir: this.options.agentDir,
         env: this.options.env ?? process.env,
         policy: this.options.policy,
       })
+    } catch (error) {
+      if (RunnerError.is(error)) throw error
+      return await this.delegate(error, spec, isHostTransportError(error))
+    }
+    try {
       return await this.openChild(spec, daemon.socket)
     } catch (error) {
       if (RunnerError.is(error)) throw error
-      return await this.delegate(error, spec)
+      return await this.delegate(error, spec, false)
     }
   }
 
@@ -131,12 +137,21 @@ export class RpcHostRunner {
    * The LOUD, narrow fallback. `fallbackAllowed` is the engine's own verdict (`daemon.ts`), so the
    * set of reasons that may run a child as its own process is stated exactly once.
    */
-  private async delegate(error: unknown, spec: RpcRunnerSpec): Promise<RpcChildHandle> {
+  private async delegate(
+    error: unknown,
+    spec: RpcRunnerSpec,
+    hostUnreachable: boolean,
+  ): Promise<RpcChildHandle> {
     const fallback = this.options.fallback
     if (fallback === undefined || !(error instanceof HostUnavailableError) || !error.fallbackAllowed) {
       throw new RunnerError({
         kind: "host_unavailable",
         message: error instanceof Error ? error.message : String(error),
+        ...(error instanceof HostUnavailableError
+          ? { reason: error.reason }
+          : hostUnreachable
+            ? { reason: "host_unreachable" as const }
+            : {}),
         cause: error,
       })
     }
@@ -185,27 +200,21 @@ export class RpcHostRunner {
 
   /**
    * Open, waiting out `host_memory_pressure`: the host says when to ask again, the wait is bounded
-   * by `admissionWaitMs`, and the wait is warned once per runner. Every other refusal is final.
+   * by `admissionWaitMs`, and the wait note lives only for that admission episode. Every other
+   * refusal is final.
    */
   private async openAdmitted(
     client: HostSessionChannel,
     spec: RpcRunnerSpec,
     sessionPath: string,
   ): Promise<OpenedHostSession> {
-    const deadline = this.now() + this.admissionWaitMs
-    for (;;) {
-      try {
-        return await this.openSession(client, spec, sessionPath)
-      } catch (error) {
-        const retryAfterMs = memoryPressureRetryMs(error)
-        if (retryAfterMs === undefined || this.now() + retryAfterMs > deadline) throw error
-        if (!this.warned.has(HOST_MEMORY_PRESSURE)) {
-          this.warned.add(HOST_MEMORY_PRESSURE)
-          this.onWarning(`${HOST_MEMORY_PRESSURE} - the daemon is above its memory watermark; waiting to start task children`)
-        }
-        await this.sleep(retryAfterMs)
-      }
-    }
+    return openHostSessionWithAdmission({
+      open: () => openTaskHostSession({ client, spec, sessionPath }),
+      now: this.now,
+      sleep: this.sleep,
+      admissionWaitMs: this.admissionWaitMs,
+      onWarning: this.onWarning,
+    })
   }
 
   /**
@@ -237,33 +246,6 @@ export class RpcHostRunner {
     }
   }
 
-  private async openSession(
-    client: HostSessionChannel,
-    spec: RpcRunnerSpec,
-    sessionPath: string,
-  ): Promise<OpenedHostSession> {
-    const model = splitModelRef(spec.model)
-    const thinkingLevel = asSenpiThinkingLevel(spec.reasoning ?? spec.variant)
-    try {
-      return await client.open({
-        sessionPath,
-        cwd: spec.cwd,
-        ...(model === undefined ? {} : model),
-        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
-        ...buildChildContext(spec),
-        retainOnDisconnect: true,
-        autoTitle: false,
-      })
-    } catch (error) {
-      if (error instanceof HostUnavailableError) throw error
-      throw new RunnerError({
-        kind: "session_unavailable",
-        message: error instanceof Error ? error.message : String(error),
-        cause: error,
-      })
-    }
-  }
-
   private async startTurn(handle: HostSessionChildHandle, spec: RpcRunnerSpec): Promise<void> {
     try {
       await handle.startInitialPrompt(spec.prompt)
@@ -287,19 +269,4 @@ export class RpcHostRunner {
       })
     }
   }
-}
-
-/** The host's retry hint when it refused for memory, else undefined (any other failure). */
-function memoryPressureRetryMs(error: unknown): number | undefined {
-  const cause = RunnerError.is(error) ? error.failure.cause : error
-  if (!(cause instanceof HostSessionOpenError) || cause.code !== HOST_MEMORY_PRESSURE) return undefined
-  return cause.retryAfterMs ?? DEFAULT_PRESSURE_RETRY_MS
-}
-
-/** `provider/modelId` as the child command line spells it; anything else leaves the daemon's default. */
-function splitModelRef(model: string | undefined): { readonly provider: string; readonly modelId: string } | undefined {
-  if (model === undefined) return undefined
-  const separator = model.indexOf("/")
-  if (separator <= 0 || separator === model.length - 1) return undefined
-  return { provider: model.slice(0, separator), modelId: model.slice(separator + 1) }
 }

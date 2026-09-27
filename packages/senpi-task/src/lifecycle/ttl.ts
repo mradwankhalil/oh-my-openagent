@@ -1,3 +1,5 @@
+import { log } from "@oh-my-opencode/utils"
+
 import type { TaskRecord } from "../state"
 import { TERMINAL_STATUSES, type LifecycleContext } from "./context"
 import { destroyResidentTask } from "./destroy"
@@ -27,16 +29,29 @@ export async function cleanupExpiredRecords(context: LifecycleContext): Promise<
   const deleted: string[] = []
   const retained: string[] = []
 
+  // ONE daemon snapshot for the whole sweep: recovery tombstones and live records below share it.
+  context.hostSessionProbe.refresh()
+
   // Crash recovery before anything else: finish the interrupted expunges of a previous sweep.
   for (const taskId of context.store.listExpunging()) {
+    let record: TaskRecord | null = null
+    try {
+      record = context.store.loadExpunging(taskId)
+    } catch (error) {
+      log("senpi-task ignored an unreadable TTL tombstone during expunge recovery", {
+        taskId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    // Only daemon sessions are safely identifiable after a crash. A process pid in an arbitrarily
+    // old tombstone may have been reused; the normal (same-process) path already killed it before
+    // the tombstone could survive.
+    if (isHostSessionRecord(record)) await destroyExpungedRuntime(context, record)
     context.store.completeExpunge(taskId)
     context.kernelToolBindings?.release(taskId)
     deleted.push(taskId)
   }
 
-  // ONE daemon snapshot for the whole sweep: every host-session record below is matched against it
-  // by session path, never probed on its own.
-  context.hostSessionProbe.refresh()
   const cutoff = context.now() - context.config.ttl_ms
   for (const record of context.store.list().records) {
     if (shouldRetain(context, record, cutoff)) {
@@ -53,16 +68,7 @@ export async function cleanupExpiredRecords(context: LifecycleContext): Promise<
     // The record is now committed to deletion. A live orphan must not outlive its record: destroy
     // it through the single-writer port BEFORE phase 2 artifact deletion (no-orphan law). A daemon
     // session that is still live is CLOSED; one the daemon already parked needs nothing at all.
-    if (isHostSessionRecord(outcome.record)) {
-      if (await context.hostSessionProbe.sessionLive(outcome.record.host_session)) {
-        await destroyResidentTask(context, record.task_id, "ttl", { record: outcome.record })
-      }
-    } else {
-      const orphanPid = outcome.record.execution_mode === "process" ? outcome.record.pid : undefined
-      if (orphanPid !== undefined && context.signaller.isAlive(orphanPid)) {
-        await destroyResidentTask(context, record.task_id, "ttl", { pid: orphanPid })
-      }
-    }
+    await destroyExpungedRuntime(context, outcome.record)
     // Phase 2: children dir, spill, log, then drop the tombstone. An expunged record can never be
     // revived, so its runtime parent kernel-tool binding goes with it.
     context.store.completeExpunge(record.task_id)
@@ -70,6 +76,19 @@ export async function cleanupExpiredRecords(context: LifecycleContext): Promise<
     deleted.push(record.task_id)
   }
   return { deleted, retained }
+}
+
+async function destroyExpungedRuntime(context: LifecycleContext, record: TaskRecord): Promise<void> {
+  if (isHostSessionRecord(record)) {
+    if (await context.hostSessionProbe.sessionLive(record.host_session)) {
+      await destroyResidentTask(context, record.task_id, "ttl", { record })
+    }
+    return
+  }
+  const orphanPid = record.execution_mode === "process" ? record.pid : undefined
+  if (orphanPid !== undefined && context.signaller.isAlive(orphanPid)) {
+    await destroyResidentTask(context, record.task_id, "ttl", { pid: orphanPid })
+  }
 }
 
 function shouldRetain(context: LifecycleContext, record: TaskRecord, cutoff: number): boolean {

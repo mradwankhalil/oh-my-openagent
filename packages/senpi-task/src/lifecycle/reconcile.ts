@@ -32,7 +32,7 @@ export async function reconcileOnSessionStart(
   // Ownership is checked before terminality, residency, or mode. A live sibling owns the record in
   // every status and this process must not mutate it.
   for (const record of context.store.list().records) {
-    if (hasForeignLiveOwner(context, record)) {
+    if (await hasForeignLiveOwner(context, record)) {
       outcomes.push(parentSessionId === undefined
         ? {
             task_id: record.task_id,
@@ -244,7 +244,12 @@ async function reattachLegacyRecord(
   return { task_id: record.task_id, kind: "resumed", reason: "respawned and reattached" }
 }
 
-function hasForeignLiveOwner(context: LifecycleContext, record: TaskRecord): boolean {
+async function hasForeignLiveOwner(context: LifecycleContext, record: TaskRecord): Promise<boolean> {
+  if (isHostSessionRecord(record)) {
+    if (record.residency_state !== "resident") return false
+    return await context.hostSessionProbe.daemonAlive(record.host_session)
+      && await context.hostSessionProbe.sessionLive(record.host_session)
+  }
   return record.host_pid !== undefined && record.host_pid !== context.hostPid && context.signaller.isAlive(record.host_pid)
 }
 

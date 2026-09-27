@@ -35,7 +35,7 @@ function draining(retryAfterMs?: number): RespawnResult {
 }
 
 describe("host-session revival: attach by session path, drain deferral, daemon-loss parking", () => {
-  test("#given a host-session orphan of another session with no pid #when reconciliation sweeps #then it is never marked lost", async () => {
+  test("#given a live host session owned by another session #when reconciliation sweeps #then it is deferred without respawn", async () => {
     // given
     const store = tempStore()
     const identity = hostSession("st_0b000001")
@@ -55,8 +55,12 @@ describe("host-session revival: attach by session path, drain deferral, daemon-l
 
     // then
     expect(store.load("st_0b000001")?.status).not.toBe("lost")
-    expect(result.outcomes.find((outcome) => outcome.task_id === "st_0b000001")?.kind).not.toBe("lost")
-    expect(fixture.respawned).toEqual([{ task_id: "st_0b000001", sessionPath: identity.session_path }])
+    expect(result.outcomes).toContainEqual({
+      task_id: "st_0b000001",
+      kind: "deferred",
+      reason: "foreign_live_owner",
+    })
+    expect(fixture.respawned).toEqual([])
   })
 
   test("#given a parked host-session child of this session #when session-start revival runs #then respawn resumes the recorded host session path", async () => {

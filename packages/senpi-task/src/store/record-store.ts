@@ -131,6 +131,9 @@ export function createTaskRecordStore(config: StateDirConfig, options: TaskRecor
       removeRecord(stateDir, parsedTaskId, cache, appendFds)
       rmSync(tombstonePath(stateDir, parsedTaskId), { force: true })
     },
+    loadExpunging(taskId) {
+      return readRecord(tombstonePath(stateDir, parseTaskId(taskId)))
+    },
     listExpunging() {
       const tasksDir = join(stateDir, "tasks")
       return readDirectoryNames(tasksDir)

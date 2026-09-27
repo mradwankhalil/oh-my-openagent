@@ -1,5 +1,6 @@
 import type { DagTaskOwner } from "../dag/owner"
 import type { IsolationBackendKind } from "@oh-my-opencode/omo-config-core"
+import type { TaskStartFailureRecordFields, TaskStartFailureTransition } from "./start-failure"
 
 export type { IsolationBackendKind } from "@oh-my-opencode/omo-config-core"
 
@@ -259,7 +260,7 @@ export type TaskRecordInput = {
   readonly host_session?: HostSessionIdentity
 }
 
-export type TaskRecord = TaskRecordInput & {
+export type TaskRecord = TaskRecordInput & TaskStartFailureRecordFields & {
   readonly isolation?: IsolationRecord
   readonly task_id: string
   readonly status: TaskStatus
@@ -316,13 +317,7 @@ export type TaskTransition =
       readonly final_response: string
       readonly run_stats?: TaskRunStats
     }
-  | {
-      readonly type: "fail"
-      readonly timestamp: string
-      readonly error_message: string
-      readonly killed?: boolean
-      readonly run_stats?: TaskRunStats
-    }
+  | TaskStartFailureTransition<TaskRunStats>
   | {
       readonly type: "cancel"
       readonly timestamp: string

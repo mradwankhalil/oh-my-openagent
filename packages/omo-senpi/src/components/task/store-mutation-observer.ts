@@ -60,6 +60,7 @@ export function createMutationNotifyingStore(
       backing.completeExpunge(taskId)
       onMutation()
     },
+    loadExpunging: (taskId) => backing.loadExpunging(taskId),
     listExpunging: () => backing.listExpunging(),
   }
 }

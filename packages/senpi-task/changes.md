@@ -1,3 +1,68 @@
+## A suspended child frees its lane slot (#8973)
+
+`TaskManager.forget()` now releases the forgotten run's concurrency lease (`#releaseSlotForTask`). Suspension (session shutdown's `suspendHandle`, `parkHostSessionOnDaemonLoss`) forgets the handle first, and the outcome tracker's `ownedRecord` then refuses to settle a handle it no longer owns, so the lease of a suspended run was never released: every suspension leaked one lane slot until the parent's lane was full, new spawns queued behind it, and revival/`task_send` answered `lane_capacity`. The per-(task, epoch) release guard keeps a late settle of the stale handle from releasing a newer run's lease. `src/manager/suspended-lane-release.test.ts` covers both: a sibling starts in a one-slot lane after the suspension (RED: it queued), and a late settle of the suspended handle leaves the new holder's lease intact.
+
+## Task residency is unlimited by default (#8999)
+
+`packages/omo-config-core/src/schema/task.ts`: `residency_max_children` defaults to `"unlimited"` in both the schema and `resolveOmoTaskSettings` (was `8` in the schema and `min(16, max(8, parallelism * 2))` when resolved). An explicit number or `0` keeps its meaning. Tests that pinned the bounded default now pin `"unlimited"`; `packages/senpi-task/src/manager/residency-unlimited.test.ts` gains a default-path case in which nine children of one parent all start (RED on the old default: the ninth was `residency_denied`). `assets/omo.schema.json` and `docs/reference/omo-json.md` follow.
+
+## Task start failures preserve their closed cause and daemon admission is single-flight (#8960)
+
+Task records and every `task` / `task_output` result now carry the closed `failure_kind` and
+`failure_reason` for start failures, while the user-facing sentence is authored by the parent and
+never includes child stderr or an unknown host string. The real absent-socket client path reports
+`host_unreachable`; Senpi's readiness-deadline envelope reports `ensure_timed_out`; closed session
+refusals retain their code. Concurrent starts on one daemon socket share one in-flight ensure, a
+failed flight is never cached, and memory-pressure notices live only while their admission episodes
+are active. TTL expunge recovery closes an identifiable daemon session before deleting its child
+directory, tolerates malformed tombstones per record, and never signals a pid from an old process
+tombstone. Focused tests cover persistence and single/batch result projection, real-client
+classification, overlapping admission notices, rejected-flight retry, revival fact reset, and
+crash-recovery ordering.
+
+## Task progress subscribers survive a host-session reattach (#8983)
+
+`runners/rpc-host/handle.ts`: `subscribe` registered the listener on the port that was current at subscribe time, and a
+reattach after a lost transport (#8563) swapped `client` and re-bound only the handle's own listener. Every observer that
+subscribed at launch (the manager's progress and stats in `manager/manager.ts`, the transcript log in
+`manager/transcript-log.ts`) therefore stayed on the dead port: the turn still completed on the new host, but live
+progress, stats and the transcript went silent from the cut onward. The handle now owns its subscribers in a set and
+`bindClient` fans each event out from the current port only, so subscribers keep receiving events across any number of
+reattaches, a superseded port never delivers (no duplicates), an unsubscribe taken before a reattach still works, and the
+set is cleared on exit and detach (a parked child keeps it, since parking is not an exit). Event order is unchanged: the
+handle's own turn tracking still runs before subscribers. `runners/rpc/handle.ts` and `runners/in-process/child-handle.ts`
+never swap their client or session and are unaffected. Tests: `handle-reattach.test.ts` (two replacements over in-memory
+ports, and a real socket cut on the fake host; both assertions fail on dev with the subscriber receiving nothing).
+Contributed by @deadcode-walker in #8978.
+
+## Host-session liveness lists worker sessions on the wire (#8932)
+
+`runners/rpc-host/liveness.ts` `liveSessionPaths` sends `list_sessions { include_workers: true }` over a one-shot connection to the daemon socket and reads the reply carrying its id, instead of calling the engine `RpcClient.listSessions()`: the pinned engine client sends a bare `list_sessions` and drops the option, and the daemon hides `kind: "worker"` rows by default, so every task child read as not live. Since #8875 `hasForeignLiveOwner` (`lifecycle/reconcile.ts`) decides host-session ownership by `daemonAlive && sessionLive`, so any other session start in the project (including a child session starting inside the daemon) claimed a live child, reattached it under a new `run_epoch`, and fenced the owner's outcome off: the owner's `waitFor` never settled and a DAG node stayed `running`. The daemon runner exists only on POSIX, where the socket path is the transport address. `lifecycle/host-session.ts` compares canonical session paths on both sides: the daemon lists a session by its realpath while the record keeps the path omo requested, so a project reached through a symlink (`/tmp` on macOS, a linked workspace) never matched even with worker rows listed (`host-session-probe.test.ts`). The unused optional `HostRpcClient.listSessions` and `HostSessionRow` are removed. `rpc-host.foreign-owner.integration.test.ts` drives the production probe against the fake daemon: a live worker child reads as live, and a second process's session start defers it as `foreign_live_owner` while the owner's `waitFor` settles `completed`. The host-world fixture gains `hostPid` and `productionProbe` parent options.
+
+## Runtime fallback skips the rest of a provider whose credential is dead
+
+`manager/credential-failure.ts` (new): `isCredentialFailure(message)` recognizes a provider answer no other model on
+the same provider can fix (401, `invalid_grant`, `OAuth refresh failed`, `subscription is required`, invalid API
+key; a 403 only when its text names the account, credential, key, organization or subscription AND does not scope
+itself to a model - the word `model(s)` or the failed model id - so "Your organization must be verified to use
+this model" or "The API key is valid, but access to restricted-model is forbidden" keep the sibling rungs and get
+no re-authentication hint), and `runtimeFallbackCandidates(record, message)` drops every remaining `fallback_models`
+rung on the failed provider for such a message. `manager/manager.ts` `#tryRuntimeFallback` walks that list
+instead of `fallback_models[0]`, so a migrated OpenCode Go key whose subscription lapsed (403 on
+`minimax-m3`) no longer relaunches on `minimax-m2.7`: the next provider runs, or the task ends in error when
+none is left. `task_model_fallback` gains `skipped_models`. Any other failure keeps today's order. When the task ends on
+a credential failure, `manager-outcome.ts` records `terminalFailureMessage`: the provider error plus how to
+re-authenticate (`Provider authentication settings` on the desktop, `/login <provider>` in an interactive
+session - the manager has no session surface of its own, so both paths are named), re-add the key, or pin
+the category elsewhere. Scope: this is the manager's
+turn-level walk, which process children (`rpc-host`, `rpc`) use. An in-process child hands its chain to the
+engine as `retry.fallbackChains` (`runners/in-process/runtime-fallback-settings.ts`), and senpi's retry
+controller still retries same-provider rungs there; that belongs to the engine. A dead key is only visible
+at request time (a stored key resolves), so nothing here probes before the spawn. Tests:
+`auth-failure-fallback.test.ts` (non-credential failure keeps the same provider and its text, a subscription 403
+skips to zai, a rejected OAuth refresh with only same-provider rungs ends the task with the re-authentication hint),
+`credential-failure.test.ts` (the classifier's positive and negative cases, a model-scoped 403 keeping the sibling).
+
 ## Task-category coverage for omo doctor and omo setup (#8858)
 
 `category/coverage.ts` (new): `resolveCategoryCoverage(config, registry)` returns the usable categories (`resolveAvailableCategoryNames`) and, per unusable one, the chain providers with no model in the registry (the resolver's `missingChainProviders`, now exported with `parseAvailableModels`). Disabled categories are neither; a registry without a model list throws. Exported from `category/index.ts` and as `@oh-my-opencode/senpi-task/category-coverage`. omo#8857.
