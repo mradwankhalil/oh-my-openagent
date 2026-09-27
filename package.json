@@ -50,6 +50,7 @@
   },
   "files": [
     "THIRD-PARTY-NOTICES.md",
+    "index.js",
     "dist",
     "bin",
     "postinstall.mjs",
@@ -171,6 +172,7 @@
   },
   "homepage": "https://github.com/code-yeongyu/oh-my-openagent#readme",
   "dependencies": {
+    "@opencode/plugin": "2.0.16",
     "@opentui/solid": "^0.5.11",
     "detect-libc": "^2.1.2",
     "zod": "^4.6.5"
