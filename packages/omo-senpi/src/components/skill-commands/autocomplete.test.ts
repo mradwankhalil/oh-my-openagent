@@ -43,6 +43,22 @@ describe("bare skill command autocomplete", () => {
     expect(result?.items[0]?.description).toBe("Executes a work plan.")
   })
 
+  test("#given senpi marks a skill row as awaiting arguments #when the user types /ulw #then its alias waits too and shows the same hint", async () => {
+    const base = new FakeProvider({
+      prefix: "/ulw",
+      items: [
+        { value: "skill:ulw-execute", label: "skill:ulw-execute", description: "[plan-name] — Executes a work plan.", awaitsArguments: true },
+        { value: "skill:ulw-plan", label: "skill:ulw-plan", description: "Plans first." },
+      ],
+    })
+    const wrapped = wrapWithBareSkillCommands(base, NAMES, () => COMMANDS)
+
+    const result = await wrapped.getSuggestions(["/ulw"], 0, 4, { signal })
+
+    expect(result?.items[0]).toEqual({ value: "ulw-execute", label: "ulw-execute", description: "[plan-name] — Executes a work plan.", awaitsArguments: true })
+    expect(result?.items[2]).toEqual({ value: "ulw-plan", label: "ulw-plan", description: "Plans first." })
+  })
+
   test("#given ulw-research is disabled #when the user types /ulw #then its alias is not offered", async () => {
     const wrapped = wrapWithBareSkillCommands(new FakeProvider(null), NAMES, () => COMMANDS)
 

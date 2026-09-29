@@ -1,4 +1,8 @@
 import { GITHUB_REPOSITORY, githubHeaders } from "./github"
+import {
+  fetchInstallerDownloads,
+  resetInstallerDownloadsCacheForTests,
+} from "./installer-downloads"
 import { fetchNativeDownloads, resetNativeDownloadsCacheForTests } from "./native-downloads"
 import { fetchAllTimeDownloads, sumLineageDownloads } from "./npm-downloads"
 
@@ -13,6 +17,7 @@ export const FALLBACK_STATS_DATA: StatsData = {
   totalDownloads: 3_800_000,
   npmTotalDownloads: 3_800_000,
   nativeDownloads: 0,
+  installerDownloads: 0,
   monthlyDownloads: 200_000,
   weeklyDownloads: 36_000,
 }
@@ -25,10 +30,11 @@ interface StatsCache {
 export interface StatsData {
   stars: number
   description: string
-  /** npm lineage plus the compiled binaries downloaded from GitHub releases. */
+  /** npm lineage plus the compiled binaries downloaded from GitHub releases and the get.omo.dev mirror. */
   totalDownloads: number
   npmTotalDownloads: number
   nativeDownloads: number
+  installerDownloads: number
   monthlyDownloads: number
   weeklyDownloads: number
 }
@@ -46,6 +52,7 @@ let cache: StatsCache | null = null
 export function resetStatsCacheForTests(): void {
   cache = null
   resetNativeDownloadsCacheForTests()
+  resetInstallerDownloadsCacheForTests()
 }
 
 function formatCount(num: number): string {
@@ -90,19 +97,27 @@ async function fetchGitHubStats(): Promise<Pick<StatsData, "stars" | "descriptio
 }
 
 async function fetchFreshStats(now: Date): Promise<StatsData> {
-  const [github, monthlyDownloads, weeklyDownloads, npmTotalDownloads, nativeDownloads] =
-    await Promise.all([
-      fetchGitHubStats(),
-      sumLineageDownloads("last-month", REVALIDATE_HOURLY),
-      sumLineageDownloads("last-week", REVALIDATE_HOURLY),
-      fetchAllTimeDownloads(now, REVALIDATE_HOURLY),
-      fetchNativeDownloads(REVALIDATE_HOURLY),
-    ])
-  return {
-    ...github,
-    totalDownloads: npmTotalDownloads + nativeDownloads,
+  const [
+    github,
+    monthlyDownloads,
+    weeklyDownloads,
     npmTotalDownloads,
     nativeDownloads,
+    installerDownloads,
+  ] = await Promise.all([
+    fetchGitHubStats(),
+    sumLineageDownloads("last-month", REVALIDATE_HOURLY),
+    sumLineageDownloads("last-week", REVALIDATE_HOURLY),
+    fetchAllTimeDownloads(now, REVALIDATE_HOURLY),
+    fetchNativeDownloads(REVALIDATE_HOURLY),
+    fetchInstallerDownloads(REVALIDATE_HOURLY),
+  ])
+  return {
+    ...github,
+    totalDownloads: npmTotalDownloads + nativeDownloads + installerDownloads,
+    npmTotalDownloads,
+    nativeDownloads,
+    installerDownloads,
     monthlyDownloads,
     weeklyDownloads,
   }

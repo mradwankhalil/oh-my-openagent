@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
-import { delimiter, join } from "node:path"
+import { delimiter, dirname, join } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import {
   compiledBannerLines,
   answerCompiledFastPath,
@@ -15,9 +16,8 @@ import {
   versionLine,
 } from "../compile-entry"
 import { compiledUpdate, pickUpdateVersion, releaseAssetName, releaseVersionOf, replaceCommand } from "../compiled-update"
-import { loadChatGptSubscriptionOAuth } from "../../../node_modules/@code-yeongyu/senpi/node_modules/@earendil-works/pi-ai/dist/auth/oauth/load.js"
-import { chatgptSubscriptionOAuth } from "../../../node_modules/@code-yeongyu/senpi/node_modules/@earendil-works/pi-ai/dist/auth/oauth/chatgpt-subscription.js"
-import { chatgptSubscriptionProvider } from "../../../node_modules/@code-yeongyu/senpi/node_modules/@earendil-works/pi-ai/dist/providers/chatgpt-subscription.js"
+import { engineDependencyDir } from "../bin/lib/engine-dependency.js"
+import { registerEngineRuntimeModules } from "../engine-runtime-modules"
 import {
   isProvisionedExecutable,
   materializeProvisionedExecutable,
@@ -27,6 +27,14 @@ import {
   shouldReexecAfterProvisioning,
   type EmbeddedManifest,
 } from "../compile-runtime"
+
+const senpiRoot = dirname(dirname(fileURLToPath(import.meta.resolve("@code-yeongyu/senpi"))))
+const piAiRoot = engineDependencyDir(senpiRoot, "@earendil-works/pi-ai")
+if (piAiRoot === undefined) throw new Error(`@earendil-works/pi-ai is not resolvable from ${senpiRoot}`)
+const importPiAi = (relative: string) => import(pathToFileURL(join(piAiRoot, "dist", relative)).href)
+const { loadChatGptSubscriptionOAuth } = await importPiAi("auth/oauth/load.js")
+const { chatgptSubscriptionOAuth } = await importPiAi("auth/oauth/chatgpt-subscription.js")
+const { chatgptSubscriptionProvider } = await importPiAi("providers/chatgpt-subscription.js")
 
 const roots: string[] = []
 const temp = () => { const root = mkdtempSync(join(homedir(), "omo-compile-entry-test-")); roots.push(root); return root }
@@ -79,7 +87,8 @@ describe("provisioned executable handoff", () => {
 })
 
 describe("compiled OMO OAuth module identity", () => {
-  test("registers the loader in the same nested pi-ai graph used by the provider", async () => {
+  test("registers the loader in the same pi-ai graph senpi resolves for the provider", async () => {
+    await registerEngineRuntimeModules()
     const loadedFlow = await loadChatGptSubscriptionOAuth()
 
     expect(loadedFlow).toBe(chatgptSubscriptionOAuth)

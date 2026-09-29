@@ -146,6 +146,14 @@ impl InputServer for X11InputConnection {
         self.flush()
     }
 
+    fn pointer_within(&self, window: Window) -> CoreResult<bool> {
+        super::connection_pointer::within(&self.conn, self.root, window)
+    }
+
+    fn pointer_held(&self) -> CoreResult<bool> {
+        super::connection_pointer::held(&self.conn, self.root)
+    }
+
     fn active_window(&self) -> Option<Window> {
         self.conn
             .get_property(false, self.root, self.active_atom, AtomEnum::WINDOW, 0, 1)

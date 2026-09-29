@@ -1,6 +1,7 @@
 import { loadPiTui } from "@oh-my-opencode/senpi-task"
 
 import { createDagSdkRootProvisioning } from "./dag-sdk-root-provisioning"
+import { isOmoSenpiDisabledByEnv } from "./disable-env"
 import { AGENT_TOOLKIT_SDK_ROOT_ENV, createSdkRootProvisioning } from "./sdk-root-provisioning"
 import { IdleInjectionCoordinator } from "./idle-injection-coordinator"
 import { createFirstPaintScheduler, createStartupDeferral, type StartupWorkScheduler } from "./startup-deferral"
@@ -11,6 +12,7 @@ export interface ComposeOmoSenpiExtensionOptions {
   logger?: ComponentLogger
   /** Test seam for the startup deferral; production uses its next-tick scheduler. */
   scheduleStartupWork?: StartupWorkScheduler
+  env?: NodeJS.ProcessEnv
 }
 
 const REQUIRED_CAPABILITIES = [
@@ -103,7 +105,7 @@ export function composeOmoSenpiExtension(
       })
     }
 
-    if (pi.getFlag("omo-senpi-disabled") === true) {
+    if (pi.getFlag("omo-senpi-disabled") === true || isOmoSenpiDisabledByEnv(options.env ?? process.env)) {
       logger.info("omo-senpi disabled by flag")
       return
     }

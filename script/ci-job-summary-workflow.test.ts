@@ -64,6 +64,9 @@ const workflowExpectations = [
   { path: ".github/workflows/web-ci.yml", jobs: ["format-lint-typecheck-build"] },
   { path: ".github/workflows/isolation-linux-fs.yml", jobs: ["linux-fs"] },
   { path: ".github/workflows/web-deploy.yml", jobs: ["deploy"] },
+  { path: ".github/workflows/get-worker-ci.yml", jobs: ["worker", "install-unix", "install-alpine", "install-windows"] },
+  { path: ".github/workflows/get-worker-deploy.yml", jobs: ["deploy"] },
+  { path: ".github/workflows/installer-mirror.yml", jobs: ["mirror"] },
   { path: ".github/workflows/windows-flake-soak.yml", jobs: ["soak"] },
 ] as const satisfies readonly WorkflowExpectation[]
 

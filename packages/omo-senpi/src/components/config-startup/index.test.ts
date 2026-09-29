@@ -128,6 +128,7 @@ describe("runSenpiStartupMigration", () => {
       "skipped",
       "skipped",
       "skipped",
+      "skipped",
     ])
     expect(parse(fileSystem.readFileSync("/home/alice/.omo/omo.jsonc", "utf-8"))).toMatchObject({
       _migrations: [

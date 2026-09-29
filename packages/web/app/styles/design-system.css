@@ -1349,6 +1349,59 @@
     }
   }
 
+  /* §5 InstallTabs: until the visitor picks a tab (data-show), the target the <head> detect
+     script put on <html> (data-install) picks the visible panel and the selected tab; with no
+     detection at all the sh tab shows. */
+  [data-install-tabs] [data-panel],
+  [data-install-tabs] [data-panel-label] {
+    display: none;
+  }
+  :root:not([data-install]) [data-install-tabs]:not([data-show]) [data-panel="unix"],
+  :root[data-install="unix"] [data-install-tabs]:not([data-show]) [data-panel="unix"],
+  [data-install-tabs][data-show="unix"] [data-panel="unix"],
+  :root[data-install="powershell"] [data-install-tabs]:not([data-show]) [data-panel="powershell"],
+  [data-install-tabs][data-show="powershell"] [data-panel="powershell"],
+  :root[data-install="cmd"] [data-install-tabs]:not([data-show]) [data-panel="cmd"],
+  [data-install-tabs][data-show="cmd"] [data-panel="cmd"] {
+    display: block;
+  }
+  .install-tab {
+    margin-bottom: -1px;
+    border-bottom: 1px solid transparent;
+    white-space: nowrap;
+    transition:
+      color var(--dur-micro) var(--ease-standard),
+      border-color var(--dur-micro) var(--ease-standard);
+  }
+  .install-tab:hover {
+    color: var(--text-hi);
+  }
+  :root:not([data-install]) [data-install-tabs]:not([data-show]) .install-tab[data-tab="unix"],
+  :root[data-install="unix"] [data-install-tabs]:not([data-show]) .install-tab[data-tab="unix"],
+  [data-install-tabs][data-show="unix"] .install-tab[data-tab="unix"],
+  :root[data-install="powershell"]
+    [data-install-tabs]:not([data-show])
+    .install-tab[data-tab="powershell"],
+  [data-install-tabs][data-show="powershell"] .install-tab[data-tab="powershell"],
+  :root[data-install="cmd"] [data-install-tabs]:not([data-show]) .install-tab[data-tab="cmd"],
+  [data-install-tabs][data-show="cmd"] .install-tab[data-tab="cmd"] {
+    color: var(--text-hi);
+    border-bottom-color: var(--accent);
+  }
+  .install-caption {
+    display: grid;
+  }
+  .install-caption > [data-caption] {
+    grid-area: 1 / 1;
+  }
+  [data-install-tabs] [data-caption="computer"],
+  :root[data-install-hint="computer"] [data-install-tabs] [data-caption="next"] {
+    visibility: hidden;
+  }
+  :root[data-install-hint="computer"] [data-install-tabs] [data-caption="computer"] {
+    visibility: visible;
+  }
+
   /* Rotating word: a clipped line-height box; the track steps through --count words. */
   .rotate-word {
     display: inline-grid;

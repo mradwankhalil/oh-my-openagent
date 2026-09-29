@@ -63,7 +63,7 @@ export interface KibitzerCompositionOptions {
 
 export interface KibitzerComposition {
   readonly delivery: KibitzerDelivery
-  /** Registers the four Kibitzer hooks; call it after the projection and recall-drain handlers. */
+  /** Registers the five Kibitzer hooks; call it after the projection and recall-drain handlers. */
   registerHooks(pi: SenpiExtensionAPI): void
   onCompactionAccepted(sessionId: string, context: MemoryIdentityContext | undefined): void
   /** Aborts and disposes the session's sidecar (releasing its wake lease and its directory) and drains its delivery. */

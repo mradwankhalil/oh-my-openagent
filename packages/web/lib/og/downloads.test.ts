@@ -6,6 +6,8 @@ const POINT = /^https:\/\/api\.npmjs\.org\/downloads\/point\/([^/]+)\/([^/]+)$/
 const RELEASES =
   "https://api.github.com/repos/code-yeongyu/oh-my-openagent/releases?per_page=30&page=1"
 const NATIVE = 32_000
+const INSTALLER_STATS = "https://get.omo.dev/stats/downloads"
+const INSTALLER = 700
 const releasesPage = () =>
   Response.json([
     {
@@ -33,6 +35,7 @@ const counted = (pkg: string) => ({ downloads: PER_PACKAGE[pkg] ?? 0, package: p
 
 let reply: (range: string, packages: readonly string[]) => Promise<Response>
 let replyReleases: () => Promise<Response>
+let replyInstaller: () => Promise<Response>
 const requests: string[] = []
 
 beforeEach(() => {
@@ -41,6 +44,8 @@ beforeEach(() => {
   requests.length = 0
   reply = async (_range, packages) => bulk(packages, counted)
   replyReleases = async () => releasesPage()
+  replyInstaller = async () =>
+    Response.json({ uncountedByGitHub: INSTALLER, redirectedToGitHub: 12 })
   spyOn(Date, "now").mockImplementation(() => now)
   spyOn(globalThis, "fetch").mockImplementation(
     Object.assign(
@@ -50,6 +55,7 @@ beforeEach(() => {
         expect(init?.signal).toBeInstanceOf(AbortSignal)
         expect(init?.cache).toBe("no-store")
         if (url === RELEASES) return replyReleases()
+        if (url === INSTALLER_STATS) return replyInstaller()
         const match = POINT.exec(url)
         if (!match) throw new Error(`unexpected fetch ${url}`)
         return reply(match[1] ?? "", (match[2] ?? "").split(","))
@@ -89,7 +95,7 @@ describe("OG npm download retrieval", () => {
     // Then: one bulk request per year covers all 4 packages, 4 x 2 counts are summed, and the
     // release binaries (not the checksum file) are added once.
     expect(result).toEqual({
-      count: 2_468_000 + NATIVE,
+      count: 2_468_000 + NATIVE + INSTALLER,
       source: "live",
       expiresAt: now + 3_600_000,
     })
@@ -97,11 +103,18 @@ describe("OG npm download retrieval", () => {
       RELEASES,
       `https://api.npmjs.org/downloads/point/2025-01-01:2025-12-31/${LINEAGE}`,
       `https://api.npmjs.org/downloads/point/2026-01-01:2026-09-24/${LINEAGE}`,
+      INSTALLER_STATS,
     ])
   })
 
   test("a failing release page withholds the figure instead of an npm-only sum", async () => {
     replyReleases = async () => new Response("Rate limited", { status: 403 })
+
+    expect(await getOgDownloads()).toEqual({ count: null, source: "unavailable" })
+  })
+
+  test("failing get.omo.dev stats withhold the figure instead of a total without mirror installs", async () => {
+    replyInstaller = async () => new Response("Bad gateway", { status: 502 })
 
     expect(await getOgDownloads()).toEqual({ count: null, source: "unavailable" })
   })
@@ -116,7 +129,7 @@ describe("OG npm download retrieval", () => {
     // When / Then: nothing partial is presented, and the next request recovers.
     expect(await getOgDownloads()).toEqual({ count: null, source: "unavailable" })
     reply = async (_range, packages) => bulk(packages, counted)
-    expect((await getOgDownloads()).count).toBe(2_468_000 + NATIVE)
+    expect((await getOgDownloads()).count).toBe(2_468_000 + NATIVE + INSTALLER)
   })
 
   test("a package missing from the bulk reply withholds the figure", async () => {
@@ -139,15 +152,21 @@ describe("OG npm download retrieval", () => {
   test("reuses fresh data and coalesces concurrent requests", async () => {
     const results = await Promise.all([getOgDownloads(), getOgDownloads()])
     await getOgDownloads()
-    expect(results.map((item) => item.count)).toEqual([2_468_000 + NATIVE, 2_468_000 + NATIVE])
-    expect(requests).toHaveLength(3)
+    expect(results.map((item) => item.count)).toEqual([
+      2_468_000 + NATIVE + INSTALLER,
+      2_468_000 + NATIVE + INSTALLER,
+    ])
+    expect(requests).toHaveLength(4)
   })
 
   test("serves last known good for at most a day after the hour expires", async () => {
     await getOgDownloads()
     now += 3_600_000
     reply = async () => new Response("Rate limited", { status: 429 })
-    expect(await getOgDownloads()).toEqual({ count: 2_468_000 + NATIVE, source: "stale" })
+    expect(await getOgDownloads()).toEqual({
+      count: 2_468_000 + NATIVE + INSTALLER,
+      source: "stale",
+    })
     now += 86_400_000
     expect(await getOgDownloads()).toEqual({ count: null, source: "unavailable" })
   })

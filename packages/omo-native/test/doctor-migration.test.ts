@@ -554,4 +554,32 @@ describe("omo doctor migration checks", () => {
       expect(report(sandbox, [sandbox.bunBin], { npm_config_prefix: sandbox.npmPrefix })).toEqual([])
     })
   })
+
+  describe("#given OpenCode edition agent models in the [opencode] block", () => {
+    const withOmoConfig = (config: unknown): Sandbox => {
+      const sandbox = createSandbox()
+      installBunNative(sandbox)
+      writeFile(join(sandbox.home, ".omo", "omo.jsonc"), JSON.stringify(config))
+      return sandbox
+    }
+
+    test("#then one INFO line names each setting under its native key", () => {
+      const sandbox = withOmoConfig({ "[opencode]": { agents: { momus: { model: "zai-coding-plan/glm-5.2" }, oracle: { model: "openai/gpt-5.5" } } } })
+
+      const lines = report(sandbox, [sandbox.bunBin]).filter((line) => line.includes("momus"))
+
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toStartWith("INFO ")
+      for (const token of ["plan-reviewer", "zai/glm-5.2", "oracle", "openai/gpt-5.5"]) expect(lines[0]).toContain(token)
+    })
+
+    test("#then nothing is reported once Native sets them", () => {
+      const sandbox = withOmoConfig({
+        "[opencode]": { agents: { momus: { model: "zai-coding-plan/glm-5.2" } } },
+        "[native]": { agents: { "plan-reviewer": { model: "anthropic/claude-opus-5-5" } } },
+      })
+
+      expect(report(sandbox, [sandbox.bunBin])).toEqual([])
+    })
+  })
 })

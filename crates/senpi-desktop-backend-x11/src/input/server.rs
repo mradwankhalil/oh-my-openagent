@@ -57,6 +57,11 @@ pub trait InputServer {
     /// The core pointer's root position.
     fn pointer(&self) -> CoreResult<(i16, i16)>;
     fn warp(&self, x: i16, y: i16) -> CoreResult<()>;
+    /// Whether `window` is on the chain of windows under the pointer.
+    fn pointer_within(&self, window: Window) -> CoreResult<bool>;
+    /// Whether another client holds the pointer (an active or implicit grab,
+    /// or a freeze), so input already sent may not be delivered yet.
+    fn pointer_held(&self) -> CoreResult<bool>;
     /// `_NET_ACTIVE_WINDOW`: `None` when the window manager does not publish
     /// it (no EWMH manager), `Some(0)` when no window is active.
     fn active_window(&self) -> Option<Window>;

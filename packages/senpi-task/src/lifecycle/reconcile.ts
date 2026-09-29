@@ -33,7 +33,7 @@ export async function reconcileOnSessionStart(
   // Ownership is checked before terminality, residency, or mode. A live sibling owns the record in
   // every status and this process must not mutate it.
   for (const record of context.store.list().records) {
-    if (await hasForeignLiveOwner(context, record)) {
+    if (await hasForeignLiveOwner(context, record, parentSessionId)) {
       outcomes.push(parentSessionId === undefined
         ? {
             task_id: record.task_id,
@@ -233,13 +233,26 @@ async function reattachLegacyRecord(
   return { task_id: record.task_id, kind: "resumed", reason: "respawned and reattached" }
 }
 
-async function hasForeignLiveOwner(context: LifecycleContext, record: TaskRecord): Promise<boolean> {
+async function hasForeignLiveOwner(
+  context: LifecycleContext,
+  record: TaskRecord,
+  parentSessionId: string | undefined,
+): Promise<boolean> {
   if (isHostSessionRecord(record)) {
     if (record.residency_state !== "resident") return false
-    return await context.hostSessionProbe.daemonAlive(record.host_session)
+    const sessionLive = await context.hostSessionProbe.daemonAlive(record.host_session)
       && await context.hostSessionProbe.sessionLive(record.host_session)
+    if (!sessionLive) return false
+    // The child's session outlives the process that owned its manager (the parent's own host).
+    // When that owner is dead, the parent session reopening elsewhere is the only one left to
+    // observe the child, so it must reclaim the record instead of deferring to a dead owner.
+    return !(record.parent_session_id === parentSessionId && isDeadForeignOwner(context, record))
   }
   return record.host_pid !== undefined && record.host_pid !== context.hostPid && context.signaller.isAlive(record.host_pid)
+}
+
+function isDeadForeignOwner(context: LifecycleContext, record: TaskRecord): boolean {
+  return record.host_pid !== undefined && record.host_pid !== context.hostPid && !context.signaller.isAlive(record.host_pid)
 }
 
 // A record stamped with THIS host pid that reached the candidate list is owned by another engine in

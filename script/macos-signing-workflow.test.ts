@@ -138,6 +138,7 @@ esac
 echo "accepted source=Notarized Developer ID"
 `)
   writeFileSync(join(bin, "ditto"), `#!/bin/bash
+find "\${@: -2:1}" -type f -exec cat {} \\; -exec echo \\; > "${root}/archived-files"
 touch "\${@: -1}"
 `)
   for (const tool of ["security", "codesign", "xcrun", "spctl", "ditto"]) chmodSync(join(bin, tool), 0o755)
@@ -152,6 +153,26 @@ function runSigning(root: string, env: NodeJS.ProcessEnv, binary: string) {
 }
 
 describe("notarization polling", () => {
+  test("submits every input even when two share a basename", () => {
+    const { root, env, binary } = notarySandbox(["Accepted"])
+    try {
+      mkdirSync(join(root, "arm64"))
+      mkdirSync(join(root, "amd64"))
+      const arm = join(root, "arm64", "comment-checker")
+      const amd = join(root, "amd64", "comment-checker")
+      writeFileSync(arm, "arm64 build")
+      writeFileSync(amd, "amd64 build")
+      rmSync(binary)
+      const result = spawnSync("bash", [join(root, ".github", "scripts", "macos-sign-and-notarize.sh"), "--identifier", "ai.sisyphuslabs.comment-checker", arm, amd], { cwd: root, env, encoding: "utf8" })
+      expect(result.status, result.stderr).toBe(0)
+      const archived = readFileSync(join(root, "archived-files"), "utf8").trim().split("\n")
+      expect(archived).toHaveLength(2)
+      expect(archived.sort()).toEqual(["amd64 build", "arm64 build"])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("keeps polling through transient notarytool errors until Apple accepts", () => {
     const { root, env, binary } = notarySandbox(["FAIL", "In Progress", "FAIL", "Accepted"])
     try {

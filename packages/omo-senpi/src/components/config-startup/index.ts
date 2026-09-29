@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { posix, win32 } from "node:path"
 
 import {
@@ -16,6 +17,7 @@ import {
 import { DEVIN_SWE2_SERVED_LANES, isUnservedDevinSWE2Selector } from "@oh-my-opencode/model-core"
 import type { ComponentContext, OmoSenpiComponent, SenpiExtensionAPI } from "../../extension/types"
 import { loadSenpiOmoConfig, type SenpiOmoConfigResult } from "../config-resolution"
+import { createOpenCodeRoutingNoticePlan } from "./opencode-routing-notice"
 
 export type SenpiStartupMigrationOptions = {
   readonly backupTimestamp?: string
@@ -73,6 +75,8 @@ export function runSenpiStartupMigration(options: SenpiStartupMigrationOptions):
     }
   }
 
+  const pathOperations = options.pathOperations ?? (options.platform === "win32" ? win32 : posix)
+  const environment = options.environment ?? process.env
   try {
     const batch = runMigrations({
       ...(options.clock === undefined ? {} : { clock: options.clock }),
@@ -81,15 +85,23 @@ export function runSenpiStartupMigration(options: SenpiStartupMigrationOptions):
       ...(options.isProcessAlive === undefined ? {} : { isProcessAlive: options.isProcessAlive }),
       ...(options.onBoundary === undefined ? {} : { onBoundary: options.onBoundary }),
       ...(options.pid === undefined ? {} : { pid: options.pid }),
-      discover: () => createLegacyConfigMigrationPlans({
-        ...(options.backupTimestamp === undefined ? {} : { backupTimestamp: options.backupTimestamp }),
-        cwd: options.cwd,
-        ...(options.discoveryFileSystem === undefined ? {} : { fileSystem: options.discoveryFileSystem }),
-        environment: options.environment ?? process.env,
-        homeDir,
-        pathOperations: options.pathOperations ?? (options.platform === "win32" ? win32 : posix),
-        ...(options.platform === undefined ? {} : { platform: options.platform }),
-      }),
+      discover: () => [
+        ...createLegacyConfigMigrationPlans({
+          ...(options.backupTimestamp === undefined ? {} : { backupTimestamp: options.backupTimestamp }),
+          cwd: options.cwd,
+          ...(options.discoveryFileSystem === undefined ? {} : { fileSystem: options.discoveryFileSystem }),
+          environment,
+          homeDir,
+          pathOperations,
+          ...(options.platform === undefined ? {} : { platform: options.platform }),
+        }),
+        // Native-only: what it reports is what the native harness ignores.
+        createOpenCodeRoutingNoticePlan({
+          environment,
+          homeDir,
+          targetPath: userConfigPath(homeDir, pathOperations, options.fileSystem),
+        }),
+      ],
     })
     return {
       ...(batch.status === "locked" ? { error: "Configuration migration is already running" } : {}),
@@ -105,6 +117,19 @@ export function runSenpiStartupMigration(options: SenpiStartupMigrationOptions):
       results: [],
     }
   }
+}
+
+// The file omo-config-core's loader reads as the user layer: omo.jsonc, else omo.json; the
+// unification plan creates omo.jsonc.
+function userConfigPath(
+  homeDir: string,
+  pathOperations: ConfigMigrationPathOperations,
+  fileSystem: MigrationFileSystem | undefined,
+): string {
+  const exists = fileSystem?.existsSync ?? existsSync
+  const jsonc = pathOperations.join(homeDir, ".omo", "omo.jsonc")
+  const json = pathOperations.join(homeDir, ".omo", "omo.json")
+  return exists(jsonc) || !exists(json) ? jsonc : json
 }
 
 export function createConfigStartupComponent(options: ConfigStartupComponentOptions = {}): OmoSenpiComponent {

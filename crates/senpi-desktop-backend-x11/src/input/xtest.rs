@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use senpi_desktop_core::backend::{Modifiers, PointerEvent};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
+use x11rb::protocol::xproto::Window;
 
 use super::held::{HeldButton, Route};
 use super::keys::{modifier_keys, Stroke};
@@ -23,7 +24,10 @@ const MAX_SCROLL_CLICKS: f64 = 1_000.0;
 const PIXELS_PER_CLICK: f64 = 40.0;
 
 impl<S: InputServer> X11Input<S> {
-    pub(super) fn pointer_xtest(&mut self, event: &PointerEvent) -> CoreResult<()> {
+    /// Delivers `event` through XTEST; with `over`, the first motion must
+    /// leave the pointer over that window before any button is sent, and each
+    /// click is delivered before the next press is sent.
+    pub(super) fn pointer_xtest(&mut self, event: &PointerEvent, over: Option<Window>) -> CoreResult<()> {
         match event {
             PointerEvent::Click {
                 x,
@@ -33,20 +37,21 @@ impl<S: InputServer> X11Input<S> {
                 modifiers,
             } => {
                 let (x, y) = point(*x, *y)?;
-                self.motion_xtest(x, y)?;
+                self.approach(x, y, over)?;
                 let down = xtest_button(button_detail(*button), x, y);
                 self.with_xtest_modifiers(*modifiers, |this| {
                     for _ in 0..(*count).max(1) {
                         this.button(down, true, 0)?;
                         thread::sleep(CLICK_DELAY);
                         this.button(down, false, 0)?;
+                        this.delivered(over)?;
                     }
                     Ok(())
                 })?;
             }
             PointerEvent::Move { x, y } => {
                 let (x, y) = point(*x, *y)?;
-                self.motion_xtest(x, y)?;
+                self.approach(x, y, over)?;
             }
             PointerEvent::Drag {
                 path,
@@ -60,7 +65,7 @@ impl<S: InputServer> X11Input<S> {
                 let Some(&(x, y)) = points.first() else {
                     return Err(DesktopError::input_failed("drag path is empty"));
                 };
-                self.motion_xtest(x, y)?;
+                self.approach(x, y, over)?;
                 let down = xtest_button(button_detail(*button), x, y);
                 self.with_xtest_modifiers(*modifiers, |this| {
                     this.button(down, true, 0)?;
@@ -74,17 +79,28 @@ impl<S: InputServer> X11Input<S> {
             }
             PointerEvent::Scroll { x, y, dx, dy } => {
                 let (x, y) = point(*x, *y)?;
-                self.motion_xtest(x, y)?;
+                self.approach(x, y, over)?;
                 for (detail, clicks) in scroll_buttons(*dx, *dy) {
                     let wheel = xtest_button(detail, x, y);
                     for _ in 0..clicks {
                         self.button(wheel, true, 0)?;
                         self.button(wheel, false, 0)?;
+                        self.delivered(over)?;
                     }
                 }
             }
         }
         self.server.flush()
+    }
+
+    fn approach(&mut self, x: i16, y: i16, over: Option<Window>) -> CoreResult<()> {
+        self.motion_xtest(x, y)?;
+        over.map_or(Ok(()), |window| self.await_pointer_within(window, (x, y)))
+    }
+
+    fn delivered(&self, over: Option<Window>) -> CoreResult<()> {
+        self.server.flush()?;
+        over.map_or(Ok(()), |window| self.await_pointer_released(window))
     }
 
     fn motion_xtest(&mut self, x: i16, y: i16) -> CoreResult<()> {

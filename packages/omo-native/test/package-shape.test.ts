@@ -46,11 +46,8 @@ describe("omo-ai published package shape", () => {
     })
 
     describe("#when the dependencies are audited", () => {
-      test("#then it declares exactly the engine and codemode parser runtime dependencies", () => {
-        expect(Object.keys(manifest.dependencies ?? {}).sort()).toEqual([
-          "@babel/parser",
-          "@code-yeongyu/senpi",
-        ])
+      test("#then it declares exactly the engine runtime dependency", () => {
+        expect(Object.keys(manifest.dependencies ?? {}).sort()).toEqual(["@code-yeongyu/senpi"])
       })
 
       // omo#8247: the checker npm package ships every platform's binary (~255 MiB unpacked); the
@@ -64,13 +61,9 @@ describe("omo-ai published package shape", () => {
         expect(bundle).toContain("comment-checker_v")
       })
 
-      test("#then the codemode parser dependency is exactly pinned", () => {
-        expect(manifest.dependencies?.["@babel/parser"]).toBe("8.0.4")
-      })
-
       test("#then the senpi pin is exact with no range operator", () => {
         const pin = manifest.dependencies?.["@code-yeongyu/senpi"]
-        expect(pin).toBe("2026.9.29")
+        expect(pin).toBe("2026.9.29-3")
         expect(pin).toMatch(/^\d/)
         expect(pin).not.toMatch(/^[\^~]/)
       })

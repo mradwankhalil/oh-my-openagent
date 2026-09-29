@@ -64,6 +64,51 @@ describe("host-session revival: attach by session path, drain deferral, daemon-l
     expect(fixture.respawned).toEqual([])
   })
 
+  test("#given this session's live host-session child whose owning host died #when the parent session reopens on a new host #then it reclaims the child and resumes the recorded session", async () => {
+    // given
+    const store = tempStore()
+    const identity = hostSession("st_0b00000a")
+    const fixture = hostLifecycleDeps({ store, hostPid: HOST_PID, isAlive: (pid) => pid === HOST_PID, respawn: () => Promise.resolve(OK) })
+    fixture.daemon.hold(identity.session_path)
+    seedRecord(store, {
+      ...hostSessionRecordInput("st_0b00000a", identity),
+      status: "running",
+      residency_state: "resident",
+      host_pid: 9_999,
+    })
+    const lifecycle = createTaskLifecycle(fixture.deps)
+
+    // when
+    const result = await lifecycle.reconcileOnSessionStart("parent-1")
+
+    // then
+    expect(result.outcomes).toContainEqual({ task_id: "st_0b00000a", kind: "resumed", reason: "respawned and reattached" })
+    expect(fixture.respawned).toEqual([{ task_id: "st_0b00000a", sessionPath: identity.session_path }])
+    expect(store.load("st_0b00000a")?.host_pid).toBe(HOST_PID)
+  })
+
+  test("#given this session's live host-session child whose owning host is still alive #when the parent session reopens elsewhere #then the live owner keeps it", async () => {
+    // given
+    const store = tempStore()
+    const identity = hostSession("st_0b00000b")
+    const fixture = hostLifecycleDeps({ store, hostPid: HOST_PID, isAlive: () => true, respawn: () => Promise.resolve(OK) })
+    fixture.daemon.hold(identity.session_path)
+    seedRecord(store, {
+      ...hostSessionRecordInput("st_0b00000b", identity),
+      status: "running",
+      residency_state: "resident",
+      host_pid: 9_999,
+    })
+    const lifecycle = createTaskLifecycle(fixture.deps)
+
+    // when
+    const result = await lifecycle.reconcileOnSessionStart("parent-1")
+
+    // then
+    expect(result.outcomes).toContainEqual({ task_id: "st_0b00000b", kind: "deferred", reason: "foreign_live_owner" })
+    expect(fixture.respawned).toEqual([])
+  })
+
   test("#given a parked host-session child of this session #when session-start revival runs #then respawn resumes the recorded host session path", async () => {
     // given
     const store = tempStore()

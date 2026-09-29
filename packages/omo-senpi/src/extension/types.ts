@@ -59,7 +59,12 @@ export interface SenpiExtensionAPI {
   sendMessage(message: Record<string, unknown>, options?: Record<string, unknown>): void | Promise<void>
   sendUserMessage(content: string | readonly Record<string, unknown>[], options?: { deliverAs?: "steer" | "followUp" }): void
   /** senpi's slash-command registry: extension commands, prompt templates, and `skill:<name>` entries. */
-  getCommands?(): readonly { readonly name: string; readonly description?: string; readonly source: string }[]
+  getCommands?(): readonly {
+    readonly name: string
+    readonly description?: string
+    readonly source: string
+    readonly sourceInfo?: { readonly path?: string }
+  }[]
   /** Feature-detected until the pinned Senpi runtime exports read classifiers. */
   registerReadClassifier?(classifier: ReadClassifier): () => void
   registerRemovedToolHint?(name: string, hint: string): void

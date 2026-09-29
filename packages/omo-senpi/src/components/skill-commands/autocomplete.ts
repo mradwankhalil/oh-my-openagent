@@ -4,6 +4,8 @@ export interface AutocompleteItemLike {
   readonly value: string
   readonly label: string
   readonly description?: string
+  /** The command declares an argument hint: choosing the row fills `/name ` and waits for arguments. */
+  readonly awaitsArguments?: boolean
 }
 
 export interface AutocompleteSuggestionsLike {
@@ -37,9 +39,10 @@ export function wrapWithBareSkillCommands<T extends AutocompleteProviderLike>(
     if (options.force === true || cursorLine !== 0) return base
     const typed = LEADING_COMMAND_TOKEN.exec((lines[0] ?? "").slice(0, cursorCol))?.[1]
     if (typed === undefined) return base
-    const aliases = bareSkillItems(typed, bundledSkillNames, hostCommands())
+    const items = base?.items ?? []
+    const aliases = bareSkillItems(typed, bundledSkillNames, hostCommands(), items)
     if (aliases.length === 0) return base
-    return { prefix: base?.prefix ?? `/${typed}`, items: mergeBeforeSkillEntries(base?.items ?? [], aliases) }
+    return { prefix: base?.prefix ?? `/${typed}`, items: mergeBeforeSkillEntries(items, aliases) }
   }
   return new Proxy(current, {
     get(target, property) {
@@ -54,14 +57,24 @@ function bareSkillItems(
   typed: string,
   bundledSkillNames: ReadonlySet<string>,
   commands: readonly HostCommandInfo[] | undefined,
+  pageItems: readonly AutocompleteItemLike[],
 ): AutocompleteItemLike[] {
   return [...bundledSkillNames]
     .filter((name) => name.startsWith(typed))
     .filter((name) => resolveBareSkillCommand(`/${name}`, bundledSkillNames, commands).kind === "expand")
     .sort()
     .map((name) => {
-      const description = commands?.find((entry) => entry.name === `${SKILL_COMMAND_PREFIX}${name}`)?.description
-      return description === undefined ? { value: name, label: name } : { value: name, label: name, description }
+      // The alias mirrors its own `skill:<name>` row: senpi puts the skill's argument hint in that row's
+      // description and marks it `awaitsArguments`, and `getCommands()` carries no hint to read instead.
+      const skillRow = pageItems.find((item) => item.value === `${SKILL_COMMAND_PREFIX}${name}`)
+      const description =
+        skillRow?.description ?? commands?.find((entry) => entry.name === `${SKILL_COMMAND_PREFIX}${name}`)?.description
+      return {
+        value: name,
+        label: name,
+        ...(description !== undefined && { description }),
+        ...(skillRow?.awaitsArguments === true && { awaitsArguments: true }),
+      }
     })
 }
 

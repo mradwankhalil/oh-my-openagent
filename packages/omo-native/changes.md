@@ -1,3 +1,14 @@
+## 2026-09-29 - `omo doctor` names the active config dir and flags edits left in ~/.pi/agent (#9173)
+
+`bin/lib/doctor-pi-config.js` adds two kinds of lines to both doctor paths (`bin/lib/doctor.js` and the compiled
+`compile-entry.ts`): `INFO config dir: <agent dir>` always, and one `WARN You edited ~/.pi/agent/<file> after omo moved
+to <agent dir>; omo reads <agent dir>/<file>. Copy your change there (or run: omo config import-pi <file>).` for each of
+`auth.json`, `keybindings.json`, `models.json`, `settings.json` changed in `~/.pi/agent` after the engine copied it and
+different from the agent dir's copy. The rule mirrors the engine's startup notice (senpi `src/legacy-pi-edits.ts`): it
+reads the `legacyPiAgentDir.copiedAt` the engine records in `migrations-state.json` and, for installs copied before that
+record existed, falls back to the agent copy's preserved mtime. Unlike the engine notice, doctor reports every such edit
+on every run. `~/.pi/agent` is only read.
+
 ## 2026-09-28 - The compiled binary enters a shard supervisor without the engine CLI graph
 
 `compile-entry.ts` routes an `--internal-rpc-host-supervisor` launch through `supervisor-fast-path.ts`, which applies

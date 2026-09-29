@@ -3,6 +3,8 @@
 // payload) before that - the sink never keeps the ctx. `tool_result` captures the result head
 // first and only then lets delivery steer a held nudge; `agent_settled` is bookkeeping (the turn
 // is over for delivery, the sink refreshes its branch snapshot) and never wakes anything.
+// `tool_call` / `tool_result` / `turn_end` also tell delivery which tool calls are executing: a
+// verdict accepted while none is steers nothing and waits for the next tool boundary or prompt.
 
 import type { ComponentLogger, SenpiExtensionAPI } from "../../../extension/types"
 import type { MemoryIdentityContext } from "../context"
@@ -18,7 +20,7 @@ export interface KibitzerHookSink {
 
 export interface KibitzerHooksOptions {
   readonly sink: KibitzerHookSink
-  readonly delivery: Pick<KibitzerDelivery, "onToolResult" | "markRunning" | "markSettled">
+  readonly delivery: Pick<KibitzerDelivery, "onToolResult" | "markRunning" | "markSettled" | "markToolStarted" | "markToolFinished" | "markTurnEnded">
   readonly env: Readonly<Record<string, string | undefined>>
   readonly resolveContext: (sessionId: string) => MemoryIdentityContext | undefined
   readonly resolveSessionId: (eventCtx: unknown) => string | undefined
@@ -52,6 +54,13 @@ export function registerKibitzerHooks(pi: SenpiExtensionAPI, options: KibitzerHo
     } catch (error: unknown) {
       options.logger?.warn("omo-senpi kibitzer tool_call capture failed", { error: describe(error) })
     }
+    try {
+      const sessionId = options.resolveSessionId(eventCtx)
+      const toolCallId = toolCallIdOf(payload)
+      if (sessionId !== undefined && toolCallId !== undefined) options.delivery.markToolStarted(sessionId, toolCallId)
+    } catch (error: unknown) {
+      options.logger?.warn("omo-senpi kibitzer tool_call tracking failed", { error: describe(error) })
+    }
     return undefined
   })
 
@@ -63,12 +72,24 @@ export function registerKibitzerHooks(pi: SenpiExtensionAPI, options: KibitzerHo
     }
     try {
       const sessionId = options.resolveSessionId(eventCtx)
+      const toolCallId = toolCallIdOf(payload)
+      if (sessionId !== undefined && toolCallId !== undefined) options.delivery.markToolFinished(sessionId, toolCallId)
       const context = sessionId === undefined ? undefined : options.resolveContext(sessionId)
       if (sessionId !== undefined && context !== undefined) {
         await options.delivery.onToolResult(sessionId, context, eventCtx)
       }
     } catch (error: unknown) {
       options.logger?.warn("omo-senpi kibitzer tool_result delivery failed", { error: describe(error) })
+    }
+    return undefined
+  })
+
+  pi.on("turn_end", (_payload, eventCtx) => {
+    try {
+      const sessionId = options.resolveSessionId(eventCtx)
+      if (sessionId !== undefined) options.delivery.markTurnEnded(sessionId)
+    } catch (error: unknown) {
+      options.logger?.warn("omo-senpi kibitzer turn_end hook failed", { error: describe(error) })
     }
     return undefined
   })
@@ -83,6 +104,10 @@ export function registerKibitzerHooks(pi: SenpiExtensionAPI, options: KibitzerHo
     }
     return undefined
   })
+}
+
+function toolCallIdOf(payload: unknown): string | undefined {
+  return isRecord(payload) && typeof payload.toolCallId === "string" && payload.toolCallId !== "" ? payload.toolCallId : undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

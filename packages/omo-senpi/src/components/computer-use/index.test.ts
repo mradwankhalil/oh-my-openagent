@@ -2,7 +2,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test"
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
@@ -45,11 +46,37 @@ interface EngineLog {
   nth(method: string, n: number): Promise<void>
 }
 
+/** A host that already loaded a skill named `computer-use` before extensions contributed theirs. */
+class UserSkillHost extends HostApi {
+  constructor(readonly userSkillPath: string) {
+    super()
+  }
+
+  getCommands() {
+    return [{ name: "skill:computer-use", source: "skill", sourceInfo: { path: this.userSkillPath, scope: "user" } }]
+  }
+}
+
 const children: ChildProcessWithoutNullStreams[] = []
+const tempDirs: string[] = []
 
 afterEach(() => {
   for (const child of children.splice(0)) child.kill()
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+
+/** A HOME whose `~/.omo/omo.jsonc` holds `config`, so the component never reads the real user config. */
+function homeWith(config: Record<string, unknown> = {}): string {
+  const home = mkdtempSync(join(tmpdir(), "omo-computer-use-home-"))
+  tempDirs.push(home)
+  mkdirSync(join(home, ".omo"), { recursive: true })
+  writeFileSync(join(home, ".omo", "omo.jsonc"), JSON.stringify(config))
+  return home
+}
+
+function contributedSkillPaths(results: unknown[]): string[] {
+  return results.flatMap((result) => (result as { skillPaths?: string[] } | undefined)?.skillPaths ?? [])
+}
 
 function fakeEngine(): EngineLog {
   const methods: string[] = []
@@ -97,12 +124,14 @@ function register(options: {
   readonly platform?: string
   readonly engineChild?: ChildFactory
   readonly pi?: FakeExtensionAPI
+  readonly omoConfig?: Record<string, unknown>
 }) {
   const pi = options.pi ?? new HostApi()
   const log = logger()
   const engine = fakeEngine()
   const component = createComputerUseComponent({
     platform: options.platform ?? "linux",
+    env: { HOME: homeWith(options.omoConfig) },
     engineChild: () => options.engineChild ?? engine.factory,
     loadSettings: (_cwd, platform) => resolveComputerSettings(options.block, platform),
   })
@@ -355,5 +384,70 @@ describe("computer-use component", () => {
     // then
     expect(contribution?.skillPaths).toHaveLength(1)
     expect(existsSync(contribution?.skillPaths[0] ?? "")).toBe(true)
+  })
+
+  test("#given the host already loaded a user skill named computer-use #when resources_discover fires #then the built-in skill yields and is not contributed", async () => {
+    // given
+    const { pi } = register({ pi: new UserSkillHost("/home/me/.omo/agent/skills/computer-use/SKILL.md") })
+
+    // when
+    const results = await pi.dispatch("resources_discover", { type: "resources_discover", cwd: "/work", reason: "startup" })
+
+    // then
+    expect(contributedSkillPaths(results)).toEqual([])
+    expect(tool(pi, "computer")).toBeDefined()
+  })
+
+  test("#given the only loaded computer-use skill is the built-in copy #when resources_discover fires again #then it is still contributed", async () => {
+    // given: a runtime that kept the previous pass's skill set
+    const first = register({})
+    const [builtIn] = contributedSkillPaths(await first.pi.dispatch("resources_discover", {}))
+    const { pi } = register({ pi: new UserSkillHost(builtIn ?? "") })
+
+    // when
+    const results = await pi.dispatch("resources_discover", {})
+
+    // then
+    expect(contributedSkillPaths(results)).toEqual([builtIn ?? ""])
+  })
+
+  test("#given disabled_skills names computer-use #when resources_discover fires #then no skill is contributed and the tool stays", async () => {
+    // given
+    const { pi } = register({ omoConfig: { disabled_skills: ["computer-use"] } })
+
+    // when
+    const results = await pi.dispatch("resources_discover", { type: "resources_discover", cwd: "/work", reason: "startup" })
+
+    // then
+    expect(contributedSkillPaths(results)).toEqual([])
+    expect(tool(pi, "computer")).toBeDefined()
+  })
+
+  test("#given the built-in skill yielded to a user skill #when /computer status runs #then one line names the user's skill in its place", async () => {
+    // given
+    const userSkill = "/home/me/.omo/agent/skills/computer-use/SKILL.md"
+    const { pi } = register({ pi: new UserSkillHost(userSkill) })
+    await pi.dispatch("resources_discover", {})
+
+    // when
+    const [status] = await runCommand(pi, "status")
+
+    // then
+    const skillLines = (status ?? "").split("\n").filter((line) => line.startsWith("skill:"))
+    expect(skillLines).toEqual([
+      `skill: your own computer-use skill is active in place of the built-in guide (${userSkill})`,
+    ])
+  })
+
+  test("#given the built-in skill was contributed #when /computer status runs #then no skill line is added", async () => {
+    // given
+    const { pi } = register({})
+    await pi.dispatch("resources_discover", {})
+
+    // when
+    const [status] = await runCommand(pi, "status")
+
+    // then
+    expect((status ?? "").split("\n").filter((line) => line.startsWith("skill:"))).toEqual([])
   })
 })

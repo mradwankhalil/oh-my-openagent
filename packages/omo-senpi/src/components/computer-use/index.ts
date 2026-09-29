@@ -1,6 +1,7 @@
 import type { ChildFactory } from "@oh-my-opencode/senpi-desktop-service"
 import {
   COMPUTER_ACTIONS_TOOL_NAME,
+  COMPUTER_SKILL_NAME,
   COMPUTER_COMMAND_USAGE,
   COMPUTER_SUBCOMMANDS,
   COMPUTER_TOOL_NAME,
@@ -16,6 +17,7 @@ import {
 } from "@oh-my-opencode/senpi-desktop-tool/registration"
 
 import type { ComponentContext, OmoSenpiComponent, SenpiExtensionAPI } from "../../extension/types"
+import { type ContributedSkill, readDiscoverCwd, resolveContributedSkill } from "../bundled-skills/contributed-skill"
 import { loadSenpiOmoConfig } from "../config-resolution"
 import type { ComputerUseTelemetryObservers } from "../telemetry/omo-native-computer-use"
 import {
@@ -39,6 +41,8 @@ interface CommandContext extends ComputerHostContext {
 
 export interface ComputerUseComponentOptions {
   readonly platform?: string
+  /** Environment for reading `disabled_skills`; defaults to `process.env`. */
+  readonly env?: Record<string, string | undefined>
   /** Starts the engine child; `enginePath` is `computer.engine_path` (`undefined`: the located binary). */
   readonly engineChild?: (enginePath: string | undefined) => ChildFactory
   readonly loadSettings?: (cwd: string, platform: string) => ComputerSettings
@@ -68,6 +72,12 @@ function hostApi(pi: SenpiExtensionAPI): ComputerHostApi | undefined {
 
 function defaultLoadSettings(cwd: string, platform: string): ComputerSettings {
   return resolveOmoComputerSettings(loadSenpiOmoConfig({ cwd }).config.computer, platform)
+}
+
+function skillStatusLine(skill: ContributedSkill | undefined): string {
+  if (skill?.kind !== "yielded") return ""
+  const where = skill.ownerPath === undefined ? "" : ` (${skill.ownerPath})`
+  return `\nskill: your own ${COMPUTER_SKILL_NAME} skill is active in place of the built-in guide${where}`
 }
 
 function isStatus(args: string): boolean {
@@ -122,10 +132,16 @@ export function createComputerUseComponent(options: ComputerUseComponentOptions 
         }
       })()
 
-      const state: { backend: string; telemetryContext: unknown; activationReported: boolean } = {
+      const state: {
+        backend: string
+        telemetryContext: unknown
+        activationReported: boolean
+        skill: ContributedSkill | undefined
+      } = {
         backend: "unavailable",
         telemetryContext: undefined,
         activationReported: false,
+        skill: undefined,
       }
       const runtime =
         available === undefined
@@ -184,7 +200,10 @@ export function createComputerUseComponent(options: ComputerUseComponentOptions 
               return
             }
             const prelude = available.host.getActiveTools().includes(COMPUTER_TOOL_NAME) ? "active" : "inactive"
-            commandCtx.ui.notify(`${text}\nengine: ${service.engineState}\nprelude: ${prelude}`, "info")
+            commandCtx.ui.notify(
+              `${text}\nengine: ${service.engineState}\nprelude: ${prelude}${skillStatusLine(state.skill)}`,
+              "info",
+            )
           } catch (error) {
             if (!(error instanceof Error)) throw error
             commandCtx.ui.notify(`/computer ${args.trim()}: ${error.message}`, "error")
@@ -215,7 +234,16 @@ export function createComputerUseComponent(options: ComputerUseComponentOptions 
       pi.on("session_start", (_payload, eventCtx) => {
         state.telemetryContext = eventCtx
       })
-      pi.on("resources_discover", () => ({ skillPaths: [materializeComputerSkill()] }))
+      pi.on("resources_discover", (payload: unknown) => {
+        state.skill = resolveContributedSkill({
+          pi,
+          name: COMPUTER_SKILL_NAME,
+          path: () => materializeComputerSkill(),
+          cwd: readDiscoverCwd(payload) ?? pi.cwd ?? process.cwd(),
+          env: options.env ?? process.env,
+        })
+        return state.skill.kind === "contributed" ? { skillPaths: [state.skill.path] } : undefined
+      })
       pi.on("tool_execution_start", (payload, eventCtx) => {
         if (telemetry.toolExecutionStarted(payload)) state.telemetryContext = eventCtx
       })

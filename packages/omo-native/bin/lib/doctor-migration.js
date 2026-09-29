@@ -4,6 +4,7 @@ import { delimiter, dirname, isAbsolute, join, win32 } from "node:path"
 import { parseJsonc } from "./jsonc.js"
 import { releaseChannel } from "./package-paths.js"
 import { opencodeConfigSources } from "./setup-opencode-assets.js"
+import { openCodeRoutingGap, openCodeRoutingNotice, readEditionRouting } from "./setup-opencode-models.js"
 import { standaloneBinaryVersion } from "./standalone-binary.js"
 
 // Migration leftovers from the OpenCode edition, reported and never touched: another `omo` ahead of
@@ -321,16 +322,30 @@ export function formatMigrationLines({ shadowing, nativeDirectory, legacyPackage
   return lines
 }
 
+// The OpenCode edition's model settings Native does not use: the same line Native's first start
+// prints (omo-senpi config-startup), for as long as the gap exists.
+export function openCodeRoutingReport({ env, homeDir }) {
+  const path = ["omo.jsonc", "omo.json"].map((name) => join(homeDir, ".omo", name)).find((candidate) => readWholeFile(candidate) !== undefined)
+  let document = {}
+  if (path !== undefined) {
+    try {
+      document = parseJsonc(readWholeFile(path))
+    } catch {
+      return [] // The config loader reports an unreadable omo.jsonc itself.
+    }
+  }
+  const gap = openCodeRoutingGap(document, readEditionRouting({ home: homeDir, env }))
+  return gap.length === 0 ? [] : [`INFO ${openCodeRoutingNotice(gap)}`]
+}
+
 /** The doctor's migration section. `options.env` / `homeDir` / `platform` keep tests off the real machine. */
 export function migrationReport(options, restoreCommand) {
-  const environment = resolveMigrationEnvironment({
-    env: options.env ?? process.env,
-    platform: options.platform ?? process.platform,
-    homeDir: options.homeDir ?? homedir(),
-  })
+  const env = options.env ?? process.env
+  const homeDir = options.homeDir ?? homedir()
+  const environment = resolveMigrationEnvironment({ env, platform: options.platform ?? process.platform, homeDir })
   const bins = scanOmoBins(environment)
   const omoInstalls = omoInstallsOnPath(bins)
-  return formatMigrationLines({
+  return [...formatMigrationLines({
     shadowing: shadowingOmoBins(bins),
     nativeDirectory: omoInstalls[0]?.directory ?? null,
     legacyPackages: findLegacyPackages(environment),
@@ -339,5 +354,5 @@ export function migrationReport(options, restoreCommand) {
     omoInstalls,
     bunRoot: environment.bunRoot,
     standalone: options.standalone === true,
-  })
+  }), ...openCodeRoutingReport({ env, homeDir })]
 }

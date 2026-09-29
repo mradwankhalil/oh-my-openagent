@@ -1,3 +1,12 @@
+## lifecycle: a reopened parent reclaims its live daemon child when the host that owned it died (#9183)
+
+- `lifecycle/reconcile.ts` `hasForeignLiveOwner`: a resident host-session record whose daemon session is still live stayed
+  foreign-owned forever once the process that ran its task manager died. With one engine host per parent session that owner
+  is the parent's own host, so killing it left the finished child recorded `running`/`resident` and every surface kept
+  showing a working subagent. The record's own parent session now reclaims it when `host_pid` names a dead foreign process;
+  any other session, and a live owner, still defer (`foreign_live_owner`), and a dead session still falls through (#8659).
+  `host-session-revival.test.ts` pins both sides: dead owner -> resumed on the recorded session path, live owner -> deferred.
+
 ## unspecified-low opens on Claude Sonnet 5.5; deep-low opens on plain GPT-5.6 Sol
 
 `CATEGORY_FALLBACK_CHAINS["unspecified-low"]` and the builtin category config now lead with

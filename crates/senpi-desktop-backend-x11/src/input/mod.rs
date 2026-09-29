@@ -6,11 +6,13 @@
 
 mod connection;
 mod connection_events;
+mod connection_pointer;
 mod focus;
 mod held;
 mod keys;
 mod send_event;
 mod server;
+mod settle;
 mod toolkit_filter;
 mod xtest;
 
@@ -22,6 +24,8 @@ pub(crate) mod fake;
 mod live_tests;
 #[cfg(test)]
 mod release_tests;
+#[cfg(test)]
+mod settle_tests;
 #[cfg(test)]
 mod table_tests;
 #[cfg(test)]
@@ -74,10 +78,8 @@ impl<S: InputServer> X11Input<S> {
     pub fn pointer(&mut self, target: &Target, event: &PointerEvent, mode: DeliveryMode) -> CoreResult<()> {
         self.last_pointer_motion = None;
         match (target, mode) {
-            (Target::Desktop, _) => self.pointer_xtest(event),
-            (Target::Window(id), DeliveryMode::Foreground) => {
-                self.with_foreground(parse_window(id)?, |this| this.pointer_xtest(event))
-            }
+            (Target::Desktop, _) => self.pointer_xtest(event, None),
+            (Target::Window(id), DeliveryMode::Foreground) => self.pointer_foreground(parse_window(id)?, event),
             (Target::Window(id), DeliveryMode::Background) => {
                 let window = self.background_window(id, send_event::event_kind(event))?;
                 self.pointer_send_event(window, event)

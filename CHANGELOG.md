@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-09-29
+
+### Added
+
+**A one-line installer at get.omo.dev.** ([#9166](https://github.com/code-yeongyu/oh-my-openagent/issues/9166)) `curl -fsSL https://get.omo.dev/install.sh | bash` on macOS and Linux, or `irm https://get.omo.dev/install.ps1 | iex` in Windows PowerShell, installs the native `omo` binary for your OS and CPU into `~/.local/bin`, after checking it against the release `SHA256SUMS`. When get.omo.dev is unreachable it falls back to the npm registry and GitHub Releases. `bun add -g omo-ai` keeps working. omo.dev now shows the command for your OS and has an install page at `/docs/install` ([#9177](https://github.com/code-yeongyu/oh-my-openagent/issues/9177)).
+
+**`web_search` can use your own SearXNG.** ([senpi#2339](https://github.com/code-yeongyu/senpi/issues/2339)) Add `{ "provider": "searxng", "baseUrl": "http://localhost:8888" }` to `websearch.json`.
+
+### Changed
+
+**An unknown slash command no longer reaches the model by accident.** ([senpi#2348](https://github.com/code-yeongyu/senpi/issues/2348)) A typo like `/ulw-exec` goes back into the editor with a `Did you mean /skill:ulw-execute?` hint instead of being sent as a prompt. A second Enter on the unchanged text sends it as a normal message, and Esc keeps editing.
+
+**Moving from the OpenCode edition, OmO Native tells you which model choices it ignores.** ([#9147](https://github.com/code-yeongyu/oh-my-openagent/issues/9147), [#6794](https://github.com/code-yeongyu/oh-my-openagent/issues/6794)) On its first start, Native lists each agent and category model from your OpenCode edition settings that it ignores, with the `omo setup` step and the `omo.jsonc` key that carries it over. `omo setup` itself now carries the edition's `metis` and `momus` models over to `plan-consultant` and `plan-reviewer`.
+
+**Hosted web search runs on the provider's cheaper search model.** ([senpi#2340](https://github.com/code-yeongyu/senpi/issues/2340)) On the same login, for example `claude-haiku-4-5` on Claude routes, when your model list shows it at a lower price than the session model. If it fails or finds nothing, the search retries on the session model. `"nativeModel": "session"` in `websearch.json` restores the old behavior.
+
+**Without a `websearch.json`, `web_search` tries more than DuckDuckGo.** ([senpi#2339](https://github.com/code-yeongyu/senpi/issues/2339)) It now tries DuckDuckGo, Exa, Startpage, Mojeek, Ecosia and Google in turn and pauses an engine that blocks it, so your queries may reach these services. List only the providers you want in `websearch.json` to keep them away from the rest.
+
+**Remote MCP servers declared by a skill no longer receive your `bearerTokenEnv` token.** ([senpi#2345](https://github.com/code-yeongyu/senpi/issues/2345)) The skill picks the server's URL, so declare that server in your own `mcp.json` to keep its auth. Stdio servers from skills you installed now expand `${VAR}` the way your own `mcp.json` does.
+
+### Fixed
+
+**A running session survives `omo update`.** ([senpi#2358](https://github.com/code-yeongyu/senpi/issues/2358)) `omo update` and `bun install -g` replace the installed package, and a session started earlier used to fail every later request with `Cannot find module './<chunk>-<hash>.js'` until you restarted it. Each launch now runs from its own copy of the engine.
+
+**Config you edit in `~/.pi/agent` is no longer silently ignored.** ([#9173](https://github.com/code-yeongyu/oh-my-openagent/issues/9173)) After OmO copied `~/.pi/agent` to `~/.omo/agent`, edits to the old copy had no effect. The next start now warns once per edited file and names the file OmO reads, `omo doctor` lists the same files, and `omo config import-pi <file>` copies the edit over.
+
+**`omo doctor` no longer fails its computer-use check on every OS.** ([#9193](https://github.com/code-yeongyu/oh-my-openagent/issues/9193)) 5.1.1 shipped without an asset the check reads, so it always reported `ENOENT` for `assets.generated.json`.
+
+**A finished task child no longer stays "running" after its parent's host dies.** ([#9183](https://github.com/code-yeongyu/oh-my-openagent/issues/9183)) The child's record kept its dead owner, so Desktop showed a working agent that no longer existed and task status and DAG waits kept waiting on it.
+
+**Scrolling on X11 delivers every wheel click.** ([#9136](https://github.com/code-yeongyu/oh-my-openagent/issues/9136)) A foreground scroll from computer use sometimes dropped clicks and still reported success.
+
+**Bedrock accepts tool schemas with a root `anyOf`, `oneOf` or `allOf`.** ([senpi#1947](https://github.com/code-yeongyu/senpi/issues/1947)) It also accepts schemas without an object type, which it used to reject.
+
+**Memory reflection works when your only provider comes from an extension.** ([#9175](https://github.com/code-yeongyu/oh-my-openagent/issues/9175)) If that provider disappears you get one notice instead of the same failure on every run.
+
+**Cursor runs each tool call once.** ([senpi#2334](https://github.com/code-yeongyu/senpi/issues/2334)) It used to run every call a second time, and the replayed write could undo a file fix.
+
+**A resumed Claude conversation keeps its resume point.** ([senpi#1972](https://github.com/code-yeongyu/senpi/issues/1972)) When a monitor or goal starts the first turn on restore, the conversation no longer resends its whole history.
+
+**In headless runs, a late Kibitzer verdict no longer replaces the final answer.** ([#9158](https://github.com/code-yeongyu/oh-my-openagent/pull/9158)) It used to add a turn after the answer that ended in `NO_REPLY`.
+
+**An MCP server that changes its tool list mid-session gets the new list registered.** ([senpi#2188](https://github.com/code-yeongyu/senpi/issues/2188)) Added tools now show up and removed ones stay gone.
+
+**Native OpenAI requests with hosted web search no longer fail every turn with `Tool choice 'web_search' not found in 'tools' parameter`.** ([senpi#2234](https://github.com/code-yeongyu/senpi/issues/2234))
+
+**Web search through OpenAI and xAI lists only pages the search returned.** ([senpi#2337](https://github.com/code-yeongyu/senpi/issues/2337)) Links the model wrote on its own are no longer counted as sources.
+
+**A rejected OpenAI Responses WebSocket request shows the provider's message.** ([senpi#2235](https://github.com/code-yeongyu/senpi/issues/2235)) It used to show `Error Code undefined: undefined`.
+
+**Claude subscription sessions keep the field descriptions in custom tool schemas.** ([senpi#2145](https://github.com/code-yeongyu/senpi/issues/2145)) Claude no longer wastes a call on a missing required field.
+
+**The OpenAI-compatible adapter merges back-to-back user messages for non-OpenAI hosts.** ([senpi#2120](https://github.com/code-yeongyu/senpi/issues/2120)) Direct OpenAI requests are unchanged.
+
+**Extensions that depend on sloppy-mode CommonJS packages load again under Bun.** ([senpi#1841](https://github.com/code-yeongyu/senpi/issues/1841))
+
+**Picking a skill that needs input from the slash menu now waits for you to type it.** ([#9168](https://github.com/code-yeongyu/oh-my-openagent/issues/9168)) On OmO Native, choosing `/ulw-execute`, `/ulw-plan`, `/ulw-loop`, `/ulw-research`, `/mass-ulw`, `/hyperplan`, `/init-deep`, `/refactor` or `/remove-ai-slops` from the slash menu with Enter sent it right away with nothing after it, so the skill started without the plan name, request or goal it works on. These skills now declare what they take, and Enter leaves `/ulw-execute ` (or `/skill:ulw-execute `) in the input with the hint shown in the menu; type the arguments and press Enter again to send. Skills that take no input still run on one Enter. The waiting half needs the engine release that reads the hint (code-yeongyu/senpi#2258); until OmO adopts it, the menu behaves as before.
+
+**Your own `computer-use` skill no longer opens every session with a "Skill conflicts" warning.** ([#9160](https://github.com/code-yeongyu/oh-my-openagent/issues/9160)) With computer use on, OmO Native added its built-in `computer-use` skill on every start, even when you already had a skill of that name (Orca CLI ships one), so each session opened with a collision box. The built-in skill now steps aside for a same-name user, project or package skill, which is the one that loads, and `/computer status` says so in one line. The same applies to the `x-search` skill. `disabled_skills` now hides both the way it hides the bundled skills; the `computer` and `x_search` tools stay available either way.
+
 ## [5.1.1] - 2026-09-29
 
 ### Changed

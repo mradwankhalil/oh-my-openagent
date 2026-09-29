@@ -94,6 +94,7 @@ jobs:
 
       - name: Sign and notarize Darwin desktop engine
         if: startsWith(matrix.host, 'darwin-')
+        timeout-minutes: 75
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}

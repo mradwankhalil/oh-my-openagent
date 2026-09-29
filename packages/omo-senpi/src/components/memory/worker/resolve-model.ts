@@ -19,6 +19,8 @@ export type ReflectionThinkingLevel = "off" | "minimal" | "low" | "medium" | "hi
 export type ReflectionModelCandidate = {
   readonly model: string
   readonly thinking?: ReflectionThinkingLevel
+  /** Set by the preflight when only an extension-loading child can see the model (#9175). */
+  readonly loadExtensions?: true
 }
 
 export type ReflectionModelSource = "registry_fallback" | "session_inherit"

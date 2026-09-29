@@ -54,6 +54,8 @@ pub enum Call {
     Activate(Window),
     Focus(Window),
     Warp(i16, i16),
+    /// One probe of whether another client holds the pointer.
+    HeldProbe,
 }
 
 pub struct FakeInputServer {
@@ -63,6 +65,12 @@ pub struct FakeInputServer {
     pub pointer: Cell<(i16, i16)>,
     pub pointer_after_flush: Cell<Option<(i16, i16)>>,
     pub focus_after_input: Cell<Option<Window>>,
+    /// How many `pointer_held` probes still answer held (a window manager
+    /// replaying grabbed presses); `usize::MAX` never releases.
+    pub held_probes: Cell<usize>,
+    /// How many `pointer_within` probes still answer that another window
+    /// covers the point; `usize::MAX` never uncovers it.
+    pub covered_probes: Cell<usize>,
     activate_updates_active: Cell<bool>,
     classes: HashMap<Window, Vec<u8>>,
     origins: HashMap<Window, (i16, i16)>,
@@ -86,6 +94,8 @@ impl FakeInputServer {
             pointer: Cell::new((0, 0)),
             pointer_after_flush: Cell::new(None),
             focus_after_input: Cell::new(None),
+            held_probes: Cell::new(0),
+            covered_probes: Cell::new(0),
             activate_updates_active: Cell::new(true),
             classes: HashMap::new(),
             origins: HashMap::new(),
@@ -180,6 +190,15 @@ impl InputServer for FakeInputServer {
         Ok(())
     }
 
+    fn pointer_within(&self, _window: Window) -> CoreResult<bool> {
+        Ok(!count_down(&self.covered_probes))
+    }
+
+    fn pointer_held(&self) -> CoreResult<bool> {
+        self.calls.borrow_mut().push(Call::HeldProbe);
+        Ok(count_down(&self.held_probes))
+    }
+
     fn active_window(&self) -> Option<Window> {
         self.active.get()
     }
@@ -217,4 +236,13 @@ impl InputServer for FakeInputServer {
         }
         Ok(())
     }
+}
+
+/// Whether `remaining` probes are left, spending one (`usize::MAX` never runs out).
+fn count_down(remaining: &Cell<usize>) -> bool {
+    let left = remaining.get();
+    if left != usize::MAX && left > 0 {
+        remaining.set(left - 1);
+    }
+    left > 0
 }
