@@ -29,10 +29,10 @@ import type { DelegateFallbackEntry } from "@oh-my-opencode/delegate-core"
  *
  * Unset sessions run `recommended`, which is not a lane (no family/tier): the same
  * ladder senpi's `recommended-models` builtin ships (`RECOMMENDED_DEFAULT_MODELS`,
- * senpi#2074), so the TUI and the desktop start from one order. Its rungs are served
- * ONLY by their ranked lanes (`rankedProvidersOnly`): the cross-provider fallback the
- * lanes keep would otherwise pull a gateway aggregator's vendor-prefixed copy
- * (`opengateway/anthropic/claude-opus-5-5`) into the default.
+ * senpi#2074), so the TUI and the desktop start from one order. Every builtin rung, in
+ * `recommended` and in the lanes, is served ONLY by its listed providers: a gateway
+ * aggregator's vendor-prefixed copy (`opengateway/anthropic/claude-opus-5-5`) never
+ * becomes the session model (#9146).
  */
 export type ModelProfileFamily = "daily" | "geeky"
 export type ModelProfileTier = "normal" | "heavy"
@@ -43,8 +43,6 @@ export type BuiltinModelProfile = {
   /** Picker axes; absent on `recommended`, which is the default rather than a lane. */
   readonly family?: ModelProfileFamily
   readonly tier?: ModelProfileTier
-  /** Serve each rung only from its listed providers, with no cross-provider fallback. */
-  readonly rankedProvidersOnly?: boolean
   readonly models: readonly DelegateFallbackEntry[]
 }
 
@@ -67,7 +65,6 @@ export const BUILTIN_MODEL_PROFILES: Readonly<Record<string, BuiltinModelProfile
   recommended: {
     displayName: "Recommended",
     description: "The best model you have connected, in OmO's recommended order.",
-    rankedProvidersOnly: true,
     models: [
       { providers: [...CLAUDE_PROVIDERS], model: "claude-opus-5-5", variant: "medium" },
       { providers: [...CLAUDE_PROVIDERS], model: "claude-fable-5-1", variant: "xhigh" },

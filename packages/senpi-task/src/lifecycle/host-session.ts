@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
+
 import type { HostSessionIdentity, TaskRecord } from "../state"
 
 /**
@@ -23,8 +26,27 @@ export function hostSessionResumePath(record: TaskRecord | null | undefined): st
 export type HostSessionProbe = {
   daemonAlive(hostSession: HostSessionIdentity): Promise<boolean>
   sessionLive(hostSession: HostSessionIdentity): Promise<boolean>
-  /** Drop the cached snapshot so the NEXT pass asks the daemon again. */
-  refresh(): void
+  /** Refresh one recorded endpoint, or all snapshots when starting a reconcile/TTL pass. */
+  refresh(socket?: string): void
+}
+
+/**
+ * How revival reaches a RECORDED endpoint beyond probing it. `isOwn` names the endpoint this session
+ * runs behind (never ensured from inside); `ensure` re-ensures any other recorded socket, and only
+ * that socket; `notice` surfaces why a record stays parked. A lifecycle with no task host passes
+ * `NO_HOST_ENDPOINT`: probe only, never an ensure.
+ */
+export type HostEndpointPort = {
+  readonly isOwn: (socket: string) => boolean
+  readonly ensure: (socket: string) => Promise<"ensured" | "incompatible" | "unreachable">
+  readonly notice: (reason: "host_incompatible" | "own_host_unreachable", socket: string) => void
+}
+
+/** The explicit "this lifecycle has no task host" answer: a silent recorded endpoint stays `host_unreachable`. */
+export const NO_HOST_ENDPOINT: HostEndpointPort = {
+  isOwn: () => false,
+  ensure: () => Promise.resolve("unreachable"),
+  notice: () => undefined,
 }
 
 export type HostSessionProbePorts = {
@@ -49,14 +71,32 @@ export function createHostSessionProbe(ports: HostSessionProbePorts): HostSessio
     const taken = Promise.all([
       ports.daemonReachable(socket).catch(() => false),
       ports.liveSessionPaths(socket).catch((): readonly string[] => []),
-    ]).then(([daemonAlive, livePaths]) => ({ daemonAlive, livePaths: new Set(livePaths) }))
+    ]).then(([daemonAlive, livePaths]) => ({ daemonAlive, livePaths: new Set(livePaths.map(canonicalSessionPath)) }))
     passes.set(socket, taken)
     return taken
   }
   return {
     daemonAlive: async (hostSession) => (await snapshot(hostSession.socket)).daemonAlive,
-    sessionLive: async (hostSession) => (await snapshot(hostSession.socket)).livePaths.has(hostSession.session_path),
-    refresh: () => passes.clear(),
+    sessionLive: async (hostSession) =>
+      (await snapshot(hostSession.socket)).livePaths.has(canonicalSessionPath(hostSession.session_path)),
+    refresh: (socket) => {
+      if (socket === undefined) passes.clear()
+      else passes.delete(socket)
+    },
+  }
+}
+
+// The daemon lists a session by its canonical path while the record keeps the path omo asked for, so
+// a project reached through a symlink (/tmp on macOS, a linked workspace) would never match (#8932).
+function canonicalSessionPath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    try {
+      return join(realpathSync(dirname(path)), basename(path))
+    } catch {
+      return path
+    }
   }
 }
 
@@ -77,6 +117,8 @@ export type HostSessionRetryPolicy = {
   readonly maxDrainAttempts: number
   readonly defaultRetryAfterMs: number
   readonly daemonLossBackoffMs: readonly number[]
+  /** Background retries of a reconcile that deferred a daemon-hosted child; spans a handoff drain. */
+  readonly deferredRetryBackoffMs: readonly number[]
   readonly wait: (ms: number) => Promise<void>
 }
 
@@ -84,6 +126,7 @@ export const DEFAULT_HOST_SESSION_RETRY_POLICY: HostSessionRetryPolicy = {
   maxDrainAttempts: 10,
   defaultRetryAfterMs: 2_000,
   daemonLossBackoffMs: [1_000, 4_000, 16_000],
+  deferredRetryBackoffMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000, 300_000],
   wait: (ms) =>
     new Promise((resolve) => {
       setTimeout(resolve, ms).unref?.()

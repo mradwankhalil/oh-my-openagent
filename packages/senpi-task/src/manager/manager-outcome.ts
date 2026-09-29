@@ -1,8 +1,9 @@
 import { log } from "@oh-my-opencode/utils"
 
-import type { TaskRecord, TaskRunStats, TaskTransition } from "../state"
+import type { SuspensionReason, TaskRecord, TaskRunStats, TaskTransition } from "../state"
 import type { TaskRecordStore } from "../store"
 import type { ManagedChildHandle } from "./child-handle"
+import { terminalFailureMessage } from "./credential-failure"
 import { nowIso } from "./manager-helpers"
 
 export type ManagedOutcome = Awaited<ReturnType<ManagedChildHandle["waitForOutcome"]>>
@@ -41,6 +42,8 @@ export type OutcomeTrackerPorts = {
 
 export type OutcomeTracker = {
   readonly trackOutcome: (taskId: string, handle: ManagedChildHandle, model: string, epoch: number) => void
+  // The manager no longer owns this task's handle: stop watching it for parks.
+  readonly release: (taskId: string) => void
 }
 
 // A settled outcome may only terminalize a run the manager STILL owns: the same live handle and
@@ -139,13 +142,42 @@ export function createOutcomeTracker(ports: OutcomeTrackerPorts): OutcomeTracker
     persistTerminal(input.taskId, owned, input.timestamp, {
       type: "fail",
       timestamp: input.timestamp,
-      error_message: input.outcome.failure.message,
+      error_message: terminalFailureMessage(owned, input.outcome.failure.message),
       ...(input.outcome.killed === true ? { killed: true } : {}),
       ...(input.runStats === undefined ? {} : { run_stats: input.runStats }),
     })
   }
 
+  // The session parked - the child itself (its recorded endpoint refused the reattach) or the host
+  // (idle sweep, generation handoff). No outcome will settle on that handle again, so the record parks
+  // at rpc_detached WITH the cause, keeping its status, and the run is released like a suspension.
+  function parkOwned(taskId: string, handle: ManagedChildHandle, epoch: number, reason: SuspensionReason): void {
+    if (ownedRecord(ports, taskId, handle, epoch) === null) return
+    ports.store.mutate(taskId, (fresh) => {
+      const { host_pid: _hostPid, ...rest } = fresh
+      return { ...rest, residency_state: "rpc_detached", suspension_reason: reason, updated_at: nowIso(ports.now) }
+    })
+    ports.store.appendEvent(taskId, { type: "suspended", payload: { reason } })
+    ports.forget(taskId)
+  }
+
+  // One park watch per task, re-armed with every tracked run. It outlives the run's outcome: a child
+  // that stays resident after its turn is exactly the session a host idle sweep parks.
+  const parkWatches = new Map<string, () => void>()
+
+  function release(taskId: string): void {
+    parkWatches.get(taskId)?.()
+    parkWatches.delete(taskId)
+  }
+
+  function watchParks(taskId: string, handle: ManagedChildHandle, epoch: number): void {
+    release(taskId)
+    const stop = handle.onParked?.((event) => parkOwned(taskId, handle, epoch, event.reason))
+    if (stop !== undefined) parkWatches.set(taskId, stop)
+  }
+
   function trackOutcome(taskId: string, handle: ManagedChildHandle, model: string, epoch: number): void {
+    watchParks(taskId, handle, epoch)
     handle
       .waitForOutcome()
       .then(async (outcome) => {
@@ -194,5 +226,5 @@ export function createOutcomeTracker(ports: OutcomeTrackerPorts): OutcomeTracker
       .catch((error: unknown) => log("senpi-task manager outcome tracking failed", { taskId, error: String(error) }))
   }
 
-  return { trackOutcome }
+  return { trackOutcome, release }
 }

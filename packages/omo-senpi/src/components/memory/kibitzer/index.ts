@@ -163,7 +163,7 @@ export function createKibitzerComposition(options: KibitzerCompositionOptions): 
       }),
       deliver: (nudges: readonly RecallNudge[]) => delivery.accept(sessionId, context, nudges),
       onWake: (outcome) => {
-        observe.onWake(outcome, context)
+        observe.onWake(outcome, context, { category: settings.category })
         sharedKibitzerTelemetryObservers().notify(kibitzerWakeSignal(outcome))
         options.onWake?.(outcome, context)
       },

@@ -79,6 +79,33 @@ describe("kibitzer gate notice", () => {
     expect(rendered).toContain("after 3 consecutive failures")
   })
 
+  test("#given a persistent failure record naming its model and recall category #when rendered #then it names both and the setting that fixes it", () => {
+    const record: KibitzerGateRecord = {
+      version: 1,
+      status: "failed",
+      cause: "child_failed",
+      model: "devin/swe-2-low",
+      category: "quick",
+      candidateCount: 1,
+      reason: "Devin stream error permission_denied: an internal error occurred",
+      consecutiveFailures: 3,
+      wake: 3,
+    }
+    const rendered = renderKibitzerGateEntry(entry(record), { expanded: false }, theme)?.render(160).join("\n")
+    expect(rendered).toContain("last failed model: devin/swe-2-low (memory recall category \"quick\")")
+    expect(rendered).toContain("after 3 consecutive failures; set categories.quick.model (or memory.recall.category) in omo.json to a model that answers")
+    expect(rendered).not.toContain("check Kibitzer model/provider settings")
+  })
+
+  test("#given a malformed stored category #when rendered #then the notice keeps the generic settings hint instead of a broken fix line", () => {
+    for (const category of ["", "quick\nextra", "x".repeat(129), 42]) {
+      const record = { version: 1, status: "failed", cause: "child_failed", model: "devin/swe-2-low", category, candidateCount: 1, consecutiveFailures: 3 }
+      const rendered = renderKibitzerGateEntry(entry(record as KibitzerGateRecord), { expanded: false }, theme)?.render(160).join("\n")
+      expect(rendered).toContain("last failed model: devin/swe-2-low")
+      expect(rendered).toContain("after 3 consecutive failures; check Kibitzer model/provider settings")
+    }
+  })
+
   test("#given a failed record below the notice threshold (an isolated failure) #when rendered #then nothing is drawn", () => {
     const record: KibitzerGateRecord = { version: 1, status: "failed", cause: "child_failed", candidateCount: 2, wake: 1 }
     expect(renderKibitzerGateEntry(entry(record), { expanded: false }, theme)).toBeUndefined()

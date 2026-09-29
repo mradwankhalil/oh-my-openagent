@@ -20,6 +20,7 @@ on:
           - memory-two-process
           - senpi-overflow
           - full-shard-2
+          - member-residency
       iterations:
         description: Number of identical iterations to run
         required: true
@@ -137,6 +138,12 @@ jobs:
               }
             )
             "senpi-overflow" = @()
+            "member-residency" = @(
+              [ordered]@{
+                Phase = "test"
+                Arguments = [string[]]@("test", "packages/senpi-task/src/team/member-extension/residency.test.ts", "packages/senpi-task/src/runners/rpc-host/handle-detached.test.ts")
+              }
+            )
             "full-shard-2" = @(
               [ordered]@{
                 Phase = "quarantine"

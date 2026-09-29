@@ -24,10 +24,18 @@
 //                  `omo-kibitzer:unavailable` notice, no `omo-kibitzer:gate` failure escalation however
 //                  many refusals pile up, and every wake record is non-diagnostic with the dead
 //                  category named.
+//   refused-pinned-model
+//                  `categories.quick.model` pins `omo-mock/refused-1`, a model outside the builtin quick
+//                  chain, and the provider refuses every request for it with a non-transient 403
+//                  `permission_denied` (what Devin answers an unserved SWE-2 lane with, #9111). The
+//                  builtin quick rung `deepseek/deepseek-flash` is connected (served by the same mock):
+//                  the wake falls back to it inside the SAME turn, the nudge reaches the parent, the
+//                  wake record is a non-diagnostic completion on the fallback model, and no gate
+//                  notice is raised.
 //
 // Every wait is an RPC event, a filesystem change or a process exit with a bounded timeout. Evidence
 // is structured: the mock's request log, the parent session JSONL and every child transcript.
-import { copyFileSync, existsSync } from "node:fs"
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -75,9 +83,40 @@ import {
   writeOmoConfig,
 } from "./kibitzer-sidecar-support.mjs"
 
-export const SCENARIOS = ["happy", "provider-429", "context-reseed", "category-unavailable"]
+export const SCENARIOS = ["happy", "provider-429", "context-reseed", "category-unavailable", "refused-pinned-model"]
+/** The pinned model the refused-pinned-model provider refuses, and the builtin quick rung it falls back to. */
+const REFUSED_MODEL = "refused-1"
+const BUILTIN_RUNG = { provider: "deepseek", id: "deepseek-flash" }
 /** Scenario-specific omo config on top of the lane's defaults; `{}` categories kills the recall chain. */
-const CONFIG = { "category-unavailable": { categories: {} } }
+const CONFIG = {
+  "category-unavailable": { categories: {} },
+  "refused-pinned-model": { categories: { quick: { description: "QA pin outside the builtin quick chain", model: `omo-mock/${REFUSED_MODEL}` } } },
+}
+/** A non-transient refusal: Devin's Connect trailer surfaces as `permission_denied`; an HTTP provider answers 403. */
+const PERMISSION_DENIED_STEP = {
+  type: "error",
+  status: 403,
+  body: { error: { type: "permission_error", code: "permission_denied", message: "permission_denied: an internal error occurred" } },
+}
+/** Mock-provider lanes a scenario answers on its own, ahead of the parent/sidecar scripts. */
+const ROUTER_LANES = {
+  "refused-pinned-model": [{ name: "refused", matches: (body) => body?.model === REFUSED_MODEL, step: () => PERMISSION_DENIED_STEP }],
+}
+/** Scenario-specific provider wiring on top of the lane's `omo-mock/mock-1`, every provider served by the mock. */
+const SANDBOX = {
+  "refused-pinned-model": (sandbox, baseUrl) => {
+    const modelsFile = join(sandbox.agentDir, "models.json")
+    const authFile = join(sandbox.agentDir, "auth.json")
+    const models = JSON.parse(readFileSync(modelsFile, "utf8"))
+    const template = models.providers["omo-mock"].models[0]
+    models.providers["omo-mock"].models.push({ ...template, id: REFUSED_MODEL, name: "Refused 1" })
+    models.providers[BUILTIN_RUNG.provider] = { name: "mock builtin quick rung", api: "openai-completions", baseUrl, apiKey: "mock", models: [{ ...template, id: BUILTIN_RUNG.id, name: "Mock DeepSeek Flash" }] }
+    writeFileSync(modelsFile, `${JSON.stringify(models, null, 2)}\n`)
+    const auth = JSON.parse(readFileSync(authFile, "utf8"))
+    auth[BUILTIN_RUNG.provider] = { type: "api_key", key: "mock" }
+    writeFileSync(authFile, `${JSON.stringify(auth, null, 2)}\n`)
+  },
+}
 /** Refusals to observe before the absence of a gate notice is meaningful: the gate fires at three. */
 const REFUSALS_PROVING_NO_GATE = 3
 /** One parent turn is the only clock that ends a refusal's backoff band; the band opens at one second. */
@@ -119,7 +158,7 @@ export function settledAfter(transcript, isUser) {
 async function withHarness(scenario, options, run) {
   const cleanup = createCleanup()
   activeCleanups.push(cleanup)
-  const router = createRouter()
+  const router = createRouter({ lanes: ROUTER_LANES[scenario] ?? [] })
   const facts = { scenario }
   let identity
   let state
@@ -132,6 +171,7 @@ async function withHarness(scenario, options, run) {
     facts.baseUrl = await server.ready
     const sandbox = prepareSandbox(options.pluginRoot, facts.baseUrl)
     cleanup.add("sandbox", () => removeSandbox(sandbox, options.keepSandbox))
+    SANDBOX[scenario]?.(sandbox, facts.baseUrl)
     facts.sandboxRoot = sandbox.root
     const env = sandboxEnv(sandbox)
     assertSandboxEnv(sandbox, env)
@@ -406,7 +446,52 @@ async function runCategoryUnavailable({ session, state, identity, router, facts,
   }
 }
 
-const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed, "category-unavailable": runCategoryUnavailable }
+// ---- refused-pinned-model --------------------------------------------------------------------------------------
+
+async function runRefusedPinnedModel({ session, state, identity, router, facts, parentTurns, record }) {
+  const recallDir = join(identity, "runtime", "recall")
+  router.setParentSteps([{ type: "text", text: "Checking." }, { type: "text", text: "Done." }])
+  // Only the fallback rung reaches this script: every request for the pinned model is answered by the refused lane.
+  router.setSidecarSteps([nudgeStep(MEMORIES.rollout)])
+
+  await prompt(session, MEMORIES.rollout.prompt)
+  const settled = await watchUntil(recallDir, () => {
+    const lineage = sidecarDirs(identity)[0]
+    const records = lineage === undefined ? [] : wakeRecords(lineage.dir)
+    return records.length === 0 ? undefined : { lineage, records }
+  }, { timeoutMs: WAKE_TIMEOUT_MS, description: "refused-pinned-model wake 1: the wake settled" })
+  const wake = settled.records[0]
+  const transcripts = childTranscripts(settled.lineage.dir)
+  const answered = transcripts.flatMap((transcript) => transcript.assistants)
+  const refusals = answered.filter((message) => message.stopReason === "error" && message.model === REFUSED_MODEL)
+  const fallback = answered.filter((message) => message.provider === BUILTIN_RUNG.provider && message.model === BUILTIN_RUNG.id)
+  record("pinned-model-refused", (router.state.refused ?? 0) >= 1 && refusals.length >= 1, `refusedRequests=${router.state.refused ?? 0} refusalMessages=${refusals.length} error=${JSON.stringify((refusals[0]?.errorMessage ?? "").slice(0, 160))}`)
+  record("fell-back-to-builtin-rung", fallback.length >= 1 && router.state.sidecar >= 1, `fallbackMessages=${fallback.length} sidecarScriptRequests=${router.state.sidecar} models=[${answered.map((message) => `${message.provider}/${message.model}:${message.stopReason}`).join(",")}]`)
+  record("wake-completed-on-fallback", wake?.status === "completed" && wake?.diagnostic === false && wake?.model === `${BUILTIN_RUNG.provider}/${BUILTIN_RUNG.id}` && transcripts.length === 1, `wake=${JSON.stringify({ status: wake?.status, cause: wake?.cause, model: wake?.model, diagnostic: wake?.diagnostic, reason: wake?.reason })} generations=${transcripts.length}`)
+  if (wake?.status !== "completed") {
+    facts.result = { resident: sidecarDirs(identity).length === 1, childSessions: sidecarDirs(identity).length, wakeStatus: wake?.status, wakeCause: wake?.cause, wakeModel: wake?.model, refusedRequests: router.state.refused ?? 0, sidecarRequests: router.state.sidecar, nudged: 0, parentRequests: parentTurns() }
+    return
+  }
+  const held = await waitForAccepted(identity, state, MEMORIES.rollout, { description: "refused-pinned-model: accepted nudge from the fallback rung" })
+  record("nudge-accepted", held.nudges.length === 1 && held.nudges[0].path === MEMORIES.rollout.path, `held=${JSON.stringify(held)}`)
+  await prompt(session, MEMORIES.rollout.prompt)
+  const entries = readEntries(state.sessionFile)
+  record("nudge-reached-parent", nudgedPaths(entries).join(",") === MEMORIES.rollout.path && entries.filter(isRecall).length === 1, `paths=${nudgedPaths(entries).join(",")} via=${entries.filter(isNudged)[0]?.data?.via}`)
+  record("no-gate-escalation", entries.filter(isGate).length === 0 && entries.filter(isUnavailable).length === 0, `gateEntries=${entries.filter(isGate).length} unavailable=${entries.filter(isUnavailable).length}`)
+  facts.result = {
+    resident: sidecarDirs(identity).length === 1,
+    childSessions: sidecarDirs(identity).length,
+    childGenerations: transcripts.length,
+    wakeStatus: wake.status,
+    wakeModel: wake.model,
+    refusedRequests: router.state.refused ?? 0,
+    sidecarRequests: router.state.sidecar,
+    nudged: nudgedPaths(entries).length,
+    parentRequests: parentTurns(),
+  }
+}
+
+const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed, "category-unavailable": runCategoryUnavailable, "refused-pinned-model": runRefusedPinnedModel }
 
 // ---- main --------------------------------------------------------------------------------------------------------
 
@@ -480,11 +565,16 @@ function runSelfTest() {
   if (settledAfter(transcript, (text) => text.startsWith("<kibitzer-seed ")) !== undefined) throw new Error("self-test: settledAfter without the user message is undefined")
 
   const sandbox = { root: "/tmp/x", agentDir: "/tmp/x/agent", memoryHome: "/tmp/x/memory", homeDir: "/tmp/x/home" }
-  assertSandboxEnv(sandbox, { SENPI_CODING_AGENT_DIR: "/tmp/x/agent", OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home", PI_OFFLINE: "1" })
+  const lanes = { OMO_CODING_AGENT_DIR: "/tmp/x/agent", SENPI_CODING_AGENT_DIR: "/tmp/x/agent", PI_CODING_AGENT_DIR: "/tmp/x/agent" }
+  const good = { ...lanes, OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home", PI_OFFLINE: "1" }
+  assertSandboxEnv(sandbox, good)
+  const { OMO_CODING_AGENT_DIR: _dropped, ...omoLaneMissing } = good
   for (const bad of [
-    { SENPI_CODING_AGENT_DIR: `${process.env.HOME}/.omo/agent`, OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home", PI_OFFLINE: "1" },
-    { SENPI_CODING_AGENT_DIR: "/tmp/x/agent", OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home", PI_OFFLINE: "1", OMO_PACKAGE_DIR: "/real" },
-    { SENPI_CODING_AGENT_DIR: "/tmp/x/agent", OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home" },
+    { ...good, SENPI_CODING_AGENT_DIR: `${process.env.HOME}/.omo/agent` },
+    { ...good, OMO_CODING_AGENT_DIR: `${process.env.HOME}/.omo/agent` },
+    omoLaneMissing,
+    { ...good, OMO_PACKAGE_DIR: "/real" },
+    { ...lanes, OMO_MEMORY_HOME: "/tmp/x/memory", HOME: "/tmp/x/home" },
   ]) {
     let rejected = false
     try { assertSandboxEnv(sandbox, bad) } catch { rejected = true }

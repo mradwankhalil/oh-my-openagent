@@ -7,7 +7,7 @@ import type { SenpiHostProtocolInfo } from "../../../lazy/senpi-barrel"
 import { FakeSessionTable, type FakeDrainedSession, type FakeHostSession } from "./fake-host-sessions"
 import { fakeProtocolInfo, probeFakeHost, type FakeHostIdentityOptions } from "./fake-host-probe"
 import { fakeHostTransport, type FakeHostTransport } from "./fake-host-transport"
-import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFailure } from "./fake-host-wire"
+import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFailure, type FakeHostWarmAnswer } from "./fake-host-wire"
 
 /**
  * In-process unix-socket JSONL daemon: enough of the senpi multi-session wire for a child session
@@ -17,7 +17,7 @@ import { handleWireLine, writeFrame, type FakeHostCommand, type FakeHostOpenFail
  * parks a session, holds a path while it drains, hands its socket to a newer generation, and dies.
  */
 
-export type { FakeHostCommand, FakeHostOpenFailure } from "./fake-host-wire"
+export type { FakeHostCommand, FakeHostOpenFailure, FakeHostWarmAnswer } from "./fake-host-wire"
 export type { FakeHostSession } from "./fake-host-sessions"
 
 export interface FakeHostOptions extends FakeHostIdentityOptions {
@@ -28,6 +28,10 @@ export interface FakeHostOptions extends FakeHostIdentityOptions {
   readonly transcripts?: boolean
   /** What a draining generation tells a client to wait before retrying a held path. */
   readonly drainRetryAfterMs?: number
+  /** The `warm` answer; a current engine's `warmed` by default. */
+  readonly warm?: FakeHostWarmAnswer
+  /** Listen at this path (a shard socket a suite resolved) instead of a private temp one. */
+  readonly socketPath?: string
 }
 
 export interface FakeHost {
@@ -69,7 +73,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
   const dir = mkdtempSync(join(tmpdir(), "dh-fake-"))
   // The logical socket path on every platform; on win32 the transport derives the named pipe and
   // the secret from it, exactly as the engine's client does, so the same session logic runs there.
-  const socketPath = join(dir, "rpc.sock")
+  const socketPath = options.socketPath ?? join(dir, "rpc.sock")
   // Derived inside `listen` so a restart never re-binds the address its predecessor may still hold.
   // On win32 the pipe instance can outlive `server.close()` while a client handle lingers, so one
   // fixed derivation makes restart race itself with EADDRINUSE. Re-deriving also rotates
@@ -97,7 +101,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
     }
   }
 
-  const ports = { table, identity: () => identity, openFailure: () => openFailure, enforceSessionDir: options.enforceSessionDir === true, withheld, record }
+  const ports = { table, warm: options.warm ?? { state: "warmed" as const }, identity: () => identity, openFailure: () => openFailure, enforceSessionDir: options.enforceSessionDir === true, withheld, record }
 
   const settleConnectionWaiters = (): void => {
     for (let index = connectionWaiters.length - 1; index >= 0; index--) {
@@ -190,6 +194,7 @@ export async function startFakeHost(options: FakeHostOptions = {}): Promise<Fake
       table.setStreaming(routingId, false)
       sendTo(routingId, { type: "message_end", message })
       sendTo(routingId, { type: "agent_end", willRetry: false, messages: [message] })
+      sendTo(routingId, { type: "agent_idle" })
     },
     evict: (sessionPath) => {
       const parked = table.park(sessionPath)

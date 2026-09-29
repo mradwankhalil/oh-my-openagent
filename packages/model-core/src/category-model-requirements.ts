@@ -32,14 +32,14 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
   },
   "deep-low": {
     fallbackChain: [
-      // The Fast (priority) tier exists only on the OpenAI lanes; Copilot and OpenCode Zen serve
-      // plain gpt-6-sol, so the next rung keeps the lane open there at the same effort.
-      { providers: ["openai", "chatgpt-subscription"], model: "gpt-6-sol-fast", variant: "medium" },
+      // Plain gpt-5.6-sol leads on every lane that serves it. The Fast (priority) tier exists only on
+      // the OpenAI lanes, so it is the fallback there at the same effort.
       {
         providers: ["openai", "chatgpt-subscription", "github-copilot", "opencode"],
-        model: "gpt-6-sol",
+        model: "gpt-5.6-sol",
         variant: "medium",
-      }
+      },
+      { providers: ["openai", "chatgpt-subscription"], model: "gpt-5.6-sol-fast", variant: "medium" }
     ],
   },
   "deep-high": {
@@ -91,6 +91,11 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
   },
   "unspecified-low": {
     fallbackChain: [
+      {
+        providers: ["anthropic", "anthropic-api", "github-copilot", "opencode"],
+        model: "claude-sonnet-5-5",
+        variant: "medium",
+      },
       { providers: ["xiaomi", "opencode-go"], model: "mimo-v2.6-pro", variant: "max" },
       { providers: ["xai", "github-copilot", "opencode-go"], model: "grok-4.7", variant: "xhigh" },
       {
@@ -132,11 +137,6 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
     // of borrowing another family through the session or system default.
     requiresAnyModel: true,
     fallbackChain: [
-      {
-        providers: ["anthropic", "anthropic-api", "github-copilot", "opencode"],
-        model: "claude-fable-5-1",
-        variant: "low",
-      },
       {
         providers: ["anthropic", "anthropic-api", "github-copilot", "opencode"],
         model: "claude-opus-5-5",

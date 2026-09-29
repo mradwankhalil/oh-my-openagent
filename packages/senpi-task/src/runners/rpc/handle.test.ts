@@ -64,6 +64,7 @@ describe("createRpcChildHandle terminal turn observation", () => {
       },
     }))
     harness.emit(event({ type: "agent_end", willRetry: false }))
+    harness.emit(event({ type: "agent_idle" }))
     await harness.handle.waitForIdle()
 
     // then
@@ -97,6 +98,7 @@ describe("createRpcChildHandle terminal turn observation", () => {
       message: { role: "assistant", content: [{ type: "text", text: "first" }], stopReason: "stop" },
     }))
     harness.emit(event({ type: "agent_end", willRetry: false }))
+    harness.emit(event({ type: "agent_idle" }))
     await harness.handle.waitForIdle()
 
     // when

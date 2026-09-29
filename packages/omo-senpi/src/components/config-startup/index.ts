@@ -13,6 +13,7 @@ import {
   type ConfigMigrationDiscoveryFileSystem,
   type ConfigMigrationPathOperations,
 } from "@oh-my-opencode/omo-opencode/config-migration"
+import { DEVIN_SWE2_SERVED_LANES, isUnservedDevinSWE2Selector } from "@oh-my-opencode/model-core"
 import type { ComponentContext, OmoSenpiComponent, SenpiExtensionAPI } from "../../extension/types"
 import { loadSenpiOmoConfig, type SenpiOmoConfigResult } from "../config-resolution"
 
@@ -152,7 +153,44 @@ export function notificationMessages(
     message: `OmO Native: configuration diagnostics: ${config.diagnostics.map((diagnostic) => diagnostic.message).join("; ")}`,
     type: "warning",
   })
+  const unserved = unservedDevinSelectors(config.config)
+  if (unserved.length > 0) messages.push({
+    message: `OmO Native: Devin does not serve ${unserved.map((entry) => `${entry.selector} (${entry.path})`).join(", ")}; SWE-2 runs as ${servedDevinLanes()}`,
+    type: "warning",
+  })
   return messages
+}
+
+type ConfiguredSelector = { readonly selector: string; readonly path: string }
+
+// A category or agent pinned to a Devin SWE-2 id Cascade does not serve resolves like any other
+// model and then fails every request with permission_denied; say so once at startup instead.
+function unservedDevinSelectors(config: SenpiOmoConfigResult["config"]): readonly ConfiguredSelector[] {
+  const selectors: ConfiguredSelector[] = []
+  for (const [section, entries] of [["categories", config.categories], ["agents", config.agents]] as const) {
+    for (const [name, entry] of Object.entries(entries ?? {})) {
+      if (entry === undefined) continue
+      const base = `${section}.${name}`
+      if (entry.model !== undefined) selectors.push({ selector: entry.model, path: `${base}.model` })
+      selectors.push(...listSelectors(entry.models, `${base}.models`))
+      if ("fallback_models" in entry) selectors.push(...listSelectors(entry.fallback_models, `${base}.fallback_models`))
+    }
+  }
+  return selectors.filter((entry) => isUnservedDevinSWE2Selector(entry.selector))
+}
+
+function listSelectors(value: unknown, path: string): readonly ConfiguredSelector[] {
+  if (typeof value === "string") return [{ selector: value, path }]
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item: unknown, index): readonly ConfiguredSelector[] => {
+    const selector = typeof item === "string" ? item : typeof item === "object" && item !== null ? Reflect.get(item, "model") : undefined
+    return typeof selector === "string" ? [{ selector, path: `${path}[${index}]` }] : []
+  })
+}
+
+function servedDevinLanes(): string {
+  const lanes = DEVIN_SWE2_SERVED_LANES.map((lane) => `devin/${lane}`)
+  return `${lanes.slice(0, -1).join(", ")} or ${lanes.at(-1)}`
 }
 
 function notificationUi(value: unknown): NotificationUi | undefined {

@@ -27,6 +27,8 @@ const require = createRequire(import.meta.url)
 
 const SESSION_DIR_ENV = "SENPI_CODING_AGENT_SESSION_DIR"
 export const OMO_SENPI_TASK_RPC_CHILD = "OMO_SENPI_TASK_RPC_CHILD"
+export const OMO_SENPI_TASK_DEPTH = "OMO_SENPI_TASK_DEPTH"
+export const OMO_SENPI_TASK_ROOT_SESSION_ID = "OMO_SENPI_TASK_ROOT_SESSION_ID"
 const RPC_ENTRY_SPECIFIER = "@code-yeongyu/senpi/rpc-entry"
 
 export type RpcSpawnSpec = RpcRunnerSpec & {
@@ -154,6 +156,11 @@ function buildChildProfile(
   Object.assign(env, spec.memberEnv)
   env[SESSION_DIR_ENV] = resolveChildSessionDir(spec.state_dir, spec.task_id)
   env[OMO_SENPI_TASK_RPC_CHILD] = "1"
+  // A parent that is itself a child must not hand its OWN place in the tree down unchanged.
+  delete env[OMO_SENPI_TASK_DEPTH]
+  delete env[OMO_SENPI_TASK_ROOT_SESSION_ID]
+  if (spec.depth !== undefined) env[OMO_SENPI_TASK_DEPTH] = String(spec.depth)
+  if (spec.root_session_id !== undefined) env[OMO_SENPI_TASK_ROOT_SESSION_ID] = spec.root_session_id
   const extensions = spec.memberEnv === undefined
     ? spec.extensions?.filter((entry) => basename(entry) !== MEMBER_EXTENSION_BUNDLE_NAME)
     : spec.extensions

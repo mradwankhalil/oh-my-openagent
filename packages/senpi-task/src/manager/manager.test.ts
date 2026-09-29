@@ -26,6 +26,7 @@ import {
 } from "./__fixtures__/manager-fakes"
 import { createTaskManager } from "./manager"
 import type { ChildPlanner, ManagedRunner, SpawnAdmission, TaskManager } from "./types"
+import { NO_HOST_ENDPOINT } from "../lifecycle/host-session"
 
 const RENDERER_THEME = {
   fg: (_color: ThemeColor, text: string) => text,
@@ -65,7 +66,7 @@ function makeLifecycleManager(runner: ManagedRunner, config = settings({ default
     forget: (taskId) => getManager().forget(taskId),
     hasPendingSends: () => false,
   }
-  const lifecycle = createTaskLifecycle({ store, registry, config })
+  const lifecycle = createTaskLifecycle({ hostEndpoint: NO_HOST_ENDPOINT, store, registry, config })
   const manager = createTaskManager({
     store,
     runners: { "in-process": runner, process: runner },

@@ -34,6 +34,9 @@ export const DELETED_CHILD_ENV = [
   "OMO_BIN",
   "SENPI_BIN",
   "PI_SESSION_FILE",
+  "OMO_RPC_SOCKET",
+  "SENPI_RPC_SOCKET",
+  "PI_RPC_SOCKET",
   "OMO_RPC_SOCKET_PATH",
   "SENPI_RPC_HOST_WATCH_FD",
   "SENPI_CODING_AGENT_HOST_DIR",
@@ -156,6 +159,7 @@ function baseEnv({ home, agentDir, xdgConfigHome, extra = {} }) {
   for (const name of AGENT_DIR_ENV_NAMES) env[name] = agentDir
   env.OMO_SENPI_QA = "1"
   env.CI = "1"
+  env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
   return { ...env, ...extra }
 }
 

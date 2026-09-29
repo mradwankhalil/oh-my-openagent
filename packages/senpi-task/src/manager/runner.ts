@@ -72,6 +72,8 @@ export function createRpcManagedRunner(runner: RpcRunnerLike): ManagedRunner {
         ...(spec.variant !== undefined ? { variant: spec.variant } : {}),
         ...(spec.extensions !== undefined ? { extensions: spec.extensions } : {}),
         ...(spec.memberEnv !== undefined ? { memberEnv: spec.memberEnv } : {}),
+        depth: spec.depth,
+        root_session_id: spec.rootSessionId,
       }
       return adaptRpcHandle(await runner.start(rpcSpec))
     },

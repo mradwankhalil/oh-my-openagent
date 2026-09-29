@@ -89,20 +89,22 @@ describe("runMemoryModelAttempts", () => {
     expect(result.child.code).toBe(0)
   })
 
-  test("#given a billing exhaustion failure #when a fallback exists #then it does not burn the chain", async () => {
+  test("#given a quota exhaustion failure #when a fallback exists #then the next candidate runs the reflection (#6808)", async () => {
     // given
     const attempted: string[] = []
 
     // when
     const result = await runMemoryModelAttempts(candidates, async (candidate) => {
       attempted.push(candidate.model)
-      return child({ stderr: "Error: quota exceeded for this organization" })
+      return candidate.model === "extension-only/primary"
+        ? child({ stderr: "Error: quota exceeded for this organization" })
+        : child({ code: 0 })
     })
 
     // then
-    expect(attempted).toEqual(["extension-only/primary"])
-    expect(result.candidate.model).toBe("extension-only/primary")
-    expect(result.child.code).toBe(1)
+    expect(attempted).toEqual(["extension-only/primary", "builtin/fallback"])
+    expect(result.candidate.model).toBe("builtin/fallback")
+    expect(result.child.code).toBe(0)
   })
 
   test("#given every candidate overflows #when the chain is exhausted #then context_overflow is carried by a typed signal and message", async () => {

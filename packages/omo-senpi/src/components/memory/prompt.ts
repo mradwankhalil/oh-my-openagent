@@ -68,6 +68,7 @@ export function createMemoryPromptHandler(
   // 45 git spawns between Enter and the provider request in a 2.7k-commit identity.
   const pressureEstimates = new Map<string, number>()
   return async (payload, eventCtx) => {
+    const preview = isRecord(payload) && payload.preview === true
     const systemPrompt = readSystemPrompt(payload)
     if (systemPrompt === undefined) return undefined
     const session = readPromptSession(eventCtx)
@@ -76,15 +77,15 @@ export function createMemoryPromptHandler(
     if (context === undefined) return undefined
 
     const repo = createRepo(context)
-    const nudgeTurns = await options.resolveNudgeTurns?.(repo, session.id, context.identity)
-    const soulNotice = await options.resolveSoulNotice?.(repo, session.id, context.identity)
-    const turn = await pins.advance({
-      repo,
-      sessionId: session.id,
-      branch: session.branch,
-      head: await repo.head(),
-      record: recordPin,
-    })
+    // A preview (senpi's prompt-cache prewarm) keeps only the systemPrompt: compose at the revision the
+    // real turn will use, and record no pin, consume no watermark, announce no repin. The notice inputs
+    // only feed the message a preview discards, so their reads (a git log each) are skipped too.
+    const nudgeTurns = preview ? undefined : await options.resolveNudgeTurns?.(repo, session.id, context.identity)
+    const soulNotice = preview ? undefined : await options.resolveSoulNotice?.(repo, session.id, context.identity)
+    const pinInput = { repo, sessionId: session.id, branch: session.branch, head: await repo.head() }
+    const turn: ProjectionTurn = preview
+      ? { revision: await pins.peek(pinInput) }
+      : await pins.advance({ ...pinInput, record: recordPin })
     if (turn.repinned !== undefined && turn.repinned !== "first-turn") options.onRepin?.(session.id, turn.repinned)
     const block = await cache.compile(repo, `${MEMORY_PROMPT_TEMPLATE}:${context.identity}`, {
       agentId: context.identity,

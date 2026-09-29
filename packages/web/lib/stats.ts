@@ -1,7 +1,6 @@
+import { GITHUB_REPOSITORY, githubHeaders } from "./github"
+import { fetchNativeDownloads, resetNativeDownloadsCacheForTests } from "./native-downloads"
 import { fetchAllTimeDownloads, sumLineageDownloads } from "./npm-downloads"
-
-const GITHUB_OWNER = "code-yeongyu"
-const GITHUB_REPO = "oh-my-openagent"
 
 const CACHE_TTL_MS = 60 * 60 * 1000
 
@@ -12,6 +11,8 @@ export const FALLBACK_STATS_DATA: StatsData = {
   stars: 69_000,
   description: FALLBACK_DESCRIPTION,
   totalDownloads: 3_800_000,
+  npmTotalDownloads: 3_800_000,
+  nativeDownloads: 0,
   monthlyDownloads: 200_000,
   weeklyDownloads: 36_000,
 }
@@ -24,7 +25,10 @@ interface StatsCache {
 export interface StatsData {
   stars: number
   description: string
+  /** npm lineage plus the compiled binaries downloaded from GitHub releases. */
   totalDownloads: number
+  npmTotalDownloads: number
+  nativeDownloads: number
   monthlyDownloads: number
   weeklyDownloads: number
 }
@@ -41,6 +45,7 @@ let cache: StatsCache | null = null
 
 export function resetStatsCacheForTests(): void {
   cache = null
+  resetNativeDownloadsCacheForTests()
 }
 
 function formatCount(num: number): string {
@@ -66,18 +71,8 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
 }
 
 async function fetchGitHubStats(): Promise<Pick<StatsData, "stars" | "description">> {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github.v3+json",
-    "User-Agent": "omo-web",
-  }
-
-  const token = process.env.GITHUB_TOKEN
-  if (token) {
-    headers.Authorization = `Bearer ${token}`
-  }
-
-  const data = await fetchJson(`https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`, {
-    headers,
+  const data = await fetchJson(`https://api.github.com/repos/${GITHUB_REPOSITORY}`, {
+    headers: githubHeaders(),
   })
   if (typeof data !== "object" || data === null) {
     throw new Error("GitHub repo payload is not an object")
@@ -95,13 +90,22 @@ async function fetchGitHubStats(): Promise<Pick<StatsData, "stars" | "descriptio
 }
 
 async function fetchFreshStats(now: Date): Promise<StatsData> {
-  const [github, monthlyDownloads, weeklyDownloads, totalDownloads] = await Promise.all([
-    fetchGitHubStats(),
-    sumLineageDownloads("last-month", REVALIDATE_HOURLY),
-    sumLineageDownloads("last-week", REVALIDATE_HOURLY),
-    fetchAllTimeDownloads(now, REVALIDATE_HOURLY),
-  ])
-  return { ...github, totalDownloads, monthlyDownloads, weeklyDownloads }
+  const [github, monthlyDownloads, weeklyDownloads, npmTotalDownloads, nativeDownloads] =
+    await Promise.all([
+      fetchGitHubStats(),
+      sumLineageDownloads("last-month", REVALIDATE_HOURLY),
+      sumLineageDownloads("last-week", REVALIDATE_HOURLY),
+      fetchAllTimeDownloads(now, REVALIDATE_HOURLY),
+      fetchNativeDownloads(REVALIDATE_HOURLY),
+    ])
+  return {
+    ...github,
+    totalDownloads: npmTotalDownloads + nativeDownloads,
+    npmTotalDownloads,
+    nativeDownloads,
+    monthlyDownloads,
+    weeklyDownloads,
+  }
 }
 
 /**

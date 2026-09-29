@@ -32,6 +32,7 @@ export function registerKibitzerHooks(pi: SenpiExtensionAPI, options: KibitzerHo
   const isMemoryChild = (): boolean => CHILD_SENTINELS.some((sentinel) => options.env[sentinel] === "1")
 
   pi.on("before_agent_start", (payload, eventCtx) => {
+    if (isRecord(payload) && payload.preview === true) return undefined
     try {
       if (!isRecord(payload) || payload.type !== "before_agent_start" || typeof payload.prompt !== "string") return undefined
       if (isMemoryChild()) return undefined
@@ -42,7 +43,7 @@ export function registerKibitzerHooks(pi: SenpiExtensionAPI, options: KibitzerHo
       options.logger?.warn("omo-senpi kibitzer prompt capture failed", { error: describe(error) })
     }
     return undefined
-  })
+  }, { previewSafe: true })
 
   pi.on("tool_call", (payload, eventCtx) => {
     try {

@@ -96,6 +96,28 @@ describe("registerKibitzerHooks", () => {
     ])
   })
 
+  test("#given a preview followed by a real prompt #when before_agent_start dispatches #then preview marks nothing and the real prompt still reaches delivery and the sidecar", async () => {
+    // given
+    const pi = new FakeExtensionAPI()
+    const r = recorder()
+    registerKibitzerHooks(pi, options(r))
+    const host = context("session-1")
+
+    // when
+    const preview = await pi.dispatch("before_agent_start", { type: "before_agent_start", prompt: "recall this", preview: true }, host.ctx)
+    expect(preview).toEqual([undefined])
+    expect(r.log).toEqual([])
+    const real = await pi.dispatch("before_agent_start", beforeAgentStart("recall this"), host.ctx)
+
+    // then
+    expect(pi.handlers.find((registration) => registration.event === "before_agent_start")?.options).toEqual({ previewSafe: true })
+    expect(r.log).toEqual([
+      "delivery:running:session-1",
+      "sink:prompt:live:recall this",
+    ])
+    expect(real).toEqual([undefined])
+  })
+
   test("#given a before_agent_start payload that is not a prompt #when dispatched #then nothing is captured or marked", async () => {
     const pi = new FakeExtensionAPI()
     const r = recorder()

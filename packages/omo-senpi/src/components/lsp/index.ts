@@ -94,7 +94,8 @@ export function createLspComponent(options: LspComponentOptions = {}): OmoSenpiC
 					const afterFormat = formatted.content ? { ...parsed, content: [...parsed.content, ...formatted.content] } : parsed;
 					if (formatted.error) return { content: afterFormat.content, isError: true };
 					if (ctx.config.getFlag(LSP_POST_EDIT_DIAGNOSTICS_ENABLED_FLAG) === false) return formatted.content ? { content: afterFormat.content } : undefined;
-					return handlePostEditDiagnosticsToolResult(afterFormat, eventCtx, runPostEditDiagnostics, postEditState);
+					const diagnosed = await handlePostEditDiagnosticsToolResult(afterFormat, eventCtx, runPostEditDiagnostics, postEditState);
+					return diagnosed ?? (formatted.content ? { content: afterFormat.content } : undefined);
 				});
 			if (ctx.config.getFlag(LSP_POST_EDIT_DIAGNOSTICS_ENABLED_FLAG) !== false) {
 				pi.on("session_start", (_event, eventCtx) => {

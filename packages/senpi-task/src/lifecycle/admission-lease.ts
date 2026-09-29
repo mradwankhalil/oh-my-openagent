@@ -8,9 +8,11 @@ import { waitForAdmissionLease, wakeAdmissionLeaseWaiters } from "./admission-le
 /**
  * Crash-safe per-parent-session admission lease (`<stateDir>/locks/session-<parentSessionId>.lock`).
  *
- * Why not `withTaskRecordLock` for the batch itself: that primitive stale-reclaims after 5s by
- * mtime because it guards sub-10ms record writes (store/record-lock.ts:5-9). A batch admission
- * section is longer-lived, so a slow-but-alive holder would be reclaimed underneath itself. This
+ * Why not `withTaskRecordLock` for the batch itself: that primitive is a mutex for sub-10ms record
+ * writes. It is taken from a holder only once the holder is proven dead (store/lock-owner.ts), and a
+ * waiter gives up after one holder keeps it for 1s - blocking its thread meanwhile in the sync
+ * variant. A batch admission section is longer-lived, so waiters behind it would time out, and a
+ * holder that is alive but no longer renewing could never be taken over. This
  * lease is a RENEWABLE OWNER-TOKEN lease instead: the body is `{pid, token, renewed_at}`, the
  * holder refreshes `renewed_at` on a timer, and `token` (minted fresh per acquisition) is the
  * fencing token. Takeover is a compare-and-swap that re-validates BOTH the observed token and the

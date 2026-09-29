@@ -145,7 +145,7 @@ export function composeOmoSenpiExtension(
     // as the idle coordinator: a session that ends before the gate opens must not start a
     // half-session's worth of work on a dead API.
     const startupDeferral = createStartupDeferral({
-      schedule: options.scheduleStartupWork ?? createFirstPaintScheduler({ on: (event, handler) => pi.on(event, handler) }),
+      schedule: options.scheduleStartupWork ?? createFirstPaintScheduler({ on: (event, handler, registrationOptions) => pi.on(event, handler, registrationOptions) }),
       onError: (label, error) => logger.warn("omo-senpi deferred startup work failed", { label, error }),
     })
     pi.on("session_shutdown", () => startupDeferral.retire())

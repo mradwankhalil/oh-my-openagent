@@ -1,14 +1,15 @@
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
-import { delimiter, join } from "node:path"
+import { existsSync, realpathSync } from "node:fs"
+import { delimiter, isAbsolute, join, relative, sep } from "node:path"
 import { spawnNode } from "./child-process.js"
 import { doctorCoverageLines } from "./category-coverage.js"
+import { doctorComputerUseLines } from "./computer-use-doctor.js"
 import { runDaemonCommand } from "./daemon.js"
 import { runDoctor } from "./doctor.js"
 import { ensureEnginePrepared } from "./engine-prepare.js"
 import { migrateLegacyBunGlobalManifest } from "./legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./agent-dir.js"
-import { nearestNodeBin, packageManifest, packageRoot, readJson, resolveSenpi, updateTarget } from "./package-paths.js"
+import { nearestNodeBin, packageManifest, packageRoot, readJson, releaseBanner, releaseChannel, resolveSenpi, updateTarget } from "./package-paths.js"
 import { runSelfUpdate } from "./self-update.js"
 import { detectHarnesses } from "./setup-detect.js"
 import { readSetupSuggestionCache, spawnSetupSuggestionRefresh } from "./setup-detect-cache.js"
@@ -63,7 +64,7 @@ function brandProfile() {
     ...(changelog ? { changelog } : {}),
     update: {
       packageName: "omo-ai",
-      distTag: "beta",
+      distTag: releaseChannel(),
       command: update.command,
       changelogUrl: "https://github.com/code-yeongyu/oh-my-openagent/releases",
     },
@@ -78,10 +79,35 @@ function engineVersion() {
   }
 }
 
+function canonicalPath(path) {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return path
+  }
+}
+
+function containsPath(root, target) {
+  const rel = relative(canonicalPath(root), canonicalPath(target))
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+// A compiled omo session exports its own payload as the brand-scoped package dir, and every shell it
+// spawns inherits that. The engine reads these names before the legacy PI_PACKAGE_DIR, so a release
+// omo started from such a shell would run on the foreign payload. A deliberate relocation names this
+// install's engine and survives; a root that does not contain the engine belongs to another install.
+function dropForeignPackageDirs(env, senpiRoot) {
+  for (const name of ["OMO_PACKAGE_DIR", "SENPI_PACKAGE_DIR"]) {
+    const root = env[name]
+    if (root && !containsPath(root, senpiRoot)) delete env[name]
+  }
+}
+
 function senpiEnvironment(senpiRoot) {
   const env = { ...process.env }
   delete env.OMO_BIN
   delete env.SENPI_BIN
+  dropForeignPackageDirs(env, senpiRoot)
   // One directory for every surface. The legacy name travels too, so a bare senpi spawned by a
   // tool inherits the same state instead of falling back to its own home.
   const agentDir = canonicalAgentDir(env)
@@ -184,6 +210,20 @@ export function engineHostCall(engineArgs, options) {
   return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
 }
 
+export function rollbackMigrateCall(request) {
+  const runtime = join(packageRoot, "plugin", "runtime", "rollback-migrate.js")
+  const result = spawnSync(process.execPath, [runtime], {
+    encoding: "utf8",
+    input: JSON.stringify(request),
+    env: senpiEnvironment(preparedSenpi().packageRoot),
+    windowsHide: true,
+  })
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `rollback migration runtime exited ${result.status ?? 1}`)
+  }
+  return JSON.parse(result.stdout)
+}
+
 export async function runLauncher(args = process.argv.slice(2)) {
   migrateLegacyBunGlobalManifest()
   reportLegacyFlatAdoption()
@@ -200,6 +240,7 @@ export async function runLauncher(args = process.argv.slice(2)) {
   if (command === "daemon") {
     const outcome = runDaemonCommand(args.slice(1), {
       engine: { run: engineHostCall },
+      migration: { run: rollbackMigrateCall },
       pluginRoot: join(packageRoot, "plugin"),
       agentDir: canonicalAgentDir(),
       env: process.env,
@@ -220,8 +261,17 @@ export async function runLauncher(args = process.argv.slice(2)) {
     return
   }
   if (command === "doctor") {
-    const categoryCoverage = args[1] === "--reap" ? [] : await doctorCoverageLines({ agentDir: canonicalAgentDir() })
-    runDoctor(await detectHarnesses(), args.slice(1), { daemonEngine: { run: engineHostCall }, categoryCoverage })
+    const [categoryCoverage, computerUse] = args[1] === "--reap"
+      ? [[], []]
+      : await Promise.all([
+          doctorCoverageLines({ agentDir: canonicalAgentDir() }),
+          doctorComputerUseLines(),
+        ])
+    runDoctor(await detectHarnesses(), args.slice(1), {
+      daemonEngine: { run: engineHostCall },
+      categoryCoverage,
+      computerUse,
+    })
     return
   }
   if (command === "setup") {
@@ -240,12 +290,18 @@ export async function runLauncher(args = process.argv.slice(2)) {
     process.exitCode = await runSelfUpdate(args)
     return
   }
+  // app-server takes the plugin after its subcommand: a leading --extension never reaches the
+  // engine's app-server dispatch. It loads into every thread, including the daemon's.
+  if (command === "app-server") {
+    await spawnSenpi(args.includes("--no-extensions") ? args : [...args, "--extension", join(packageRoot, "plugin")], false)
+    return
+  }
   if (earlyCommands.has(command) || command === "update") {
     await spawnSenpi(args, false)
     return
   }
   if (isInteractiveDefault(args)) {
-    console.error(`omo (omo-ai beta ${packageManifest().version})`)
+    console.error(releaseBanner())
     if (process.stdout.isTTY === true && setupSuggestionForLaunch()) {
       console.error("omo: sibling credentials detected; run `omo setup` to review them")
     }

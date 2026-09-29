@@ -17,11 +17,14 @@
 | Picking the right model per agent | [docs/guide/agent-model-matching.md](guide/agent-model-matching.md) |
 | Team Mode (opt-in multi-agent) | [docs/guide/team-mode.md](guide/team-mode.md) |
 | Senpi task delegation and teams | [docs/guide/senpi-task.md](guide/senpi-task.md) |
+| Desktop computer use setup and safety | [docs/guide/computer-use.md](guide/computer-use.md) |
 | Temporary BTW side conversations | [docs/guide/btw.md](guide/btw.md) |
 | Configuration field reference | [docs/reference/configuration.md](reference/configuration.md) |
 | Harness-neutral `omo.json` config reference | [docs/reference/omo-json.md](reference/omo-json.md) |
+| Native `computer` tool contract | [docs/reference/computer.md](reference/computer.md) |
 | Feature-by-feature reference | [docs/reference/features.md](reference/features.md) |
 | CLI command reference | [docs/reference/cli.md](reference/cli.md) |
+| Engine hosts per session, `omo daemon`, migration and rollback | [docs/reference/omo-daemon.md](reference/omo-daemon.md) |
 | Known issues & workarounds | [docs/reference/known-issues.md](reference/known-issues.md) |
 | `prompt_async_gate` deep-dive | [docs/reference/prompt-async-gate-rfc.md](reference/prompt-async-gate-rfc.md) |
 | Shared core multi-PR extraction QA | [docs/reference/shared-core-multi-pr.md](reference/shared-core-multi-pr.md) |

@@ -64,27 +64,27 @@ const MAPPING_ROWS: readonly MappingRow[] = [
   },
   {
     given: "the daemon parks an idle session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the idle sweep",
     input: { cause: { kind: "session_parked" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
   {
     given: "a handoff parks the session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the handoff",
     input: { cause: { kind: "session_closed", reason: "handoff_parked" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "handoff_parked" },
   },
   {
     given: "the idle sweep evicts the session",
-    then: "it is not an exit at all",
+    then: "it is not an exit, and the cause is the idle sweep",
     input: { cause: { kind: "session_closed", reason: "idle_evicted" }, intent: "running" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
   {
     given: "the idle sweep evicts a session a terminate is already closing",
     then: "parking still wins over the terminate intent",
     input: { cause: { kind: "session_closed", reason: "idle_evicted" }, intent: "terminated" },
-    expected: { disposition: "parked" },
+    expected: { disposition: "parked", cause: "idle_evicted" },
   },
 ]
 
@@ -136,7 +136,7 @@ describe("createHostSessionHandle over a daemon session", () => {
     await client.getState()
 
     // then
-    expect(parked).toEqual([{ sessionId: "routing-1", sessionPath: "/tmp/sessions/b.jsonl" }])
+    expect(parked).toEqual([{ sessionId: "routing-1", sessionPath: "/tmp/sessions/b.jsonl", reason: "idle_evicted" }])
     expect(handle.exitOutcome()).toBeUndefined()
     expect(handle.attached).toBe(false)
     await handle.dispose()

@@ -23,8 +23,18 @@ export interface FakeHostOpenFailure {
   readonly data?: unknown
 }
 
+/**
+ * How the host answers `warm` (senpi#2314): a current engine warms, a worker registry answers
+ * `unsupported`, an engine from before the command refuses it (`missing_session_id`: its router
+ * reads any unknown session-less command as a session command), a draining host `host_draining`.
+ */
+export type FakeHostWarmAnswer =
+  | { readonly state: "warmed" | "already_warm" | "unsupported" }
+  | { readonly refuse: string }
+
 export interface FakeHostWirePorts {
   readonly table: FakeSessionTable
+  readonly warm: FakeHostWarmAnswer
   /** Read per line so a handoff's rotated instance answers the very next probe. */
   readonly identity: () => Readonly<Record<string, unknown>>
   readonly openFailure: () => FakeHostOpenFailure | undefined
@@ -75,6 +85,10 @@ export function handleWireLine(ports: FakeHostWirePorts, socket: Socket, line: s
       return ok({ entries: [], leafId: null })
     case "switch_session":
       return ok({ cancelled: false })
+    case "warm":
+      return "refuse" in ports.warm
+        ? writeFrame(socket, { type: "response", id: payload.id, command: type, success: false, error: ports.warm.refuse })
+        : ok({ state: ports.warm.state })
     case "extension_ui_response":
     case "extension_ui_progress":
       return
