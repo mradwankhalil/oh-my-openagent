@@ -205,6 +205,20 @@
         "02-hijack-working-model"
       ],
       "orderNote": "Independent of 02 (which fixes the reroute side); this fixes the injector side. Apply after 02."
+    },
+    {
+      "id": "14-compaction-part-marker",
+      "title": "Marker rows detected by their compaction part, not agent name alone",
+      "commit": "62ecde3d0adf5f00b47180d944b6a6f8a8c8b500",
+      "patch": "local-fixes/patches/14-compaction-part-marker.patch",
+      "why": "A compaction marker row carries the WORKING agent plus a compaction PART, but every exclusion (lifecycle isCompactionMessage, resolver resolveValidatedModel, reroute isCompactionArtifact) checked only the agent NAME. The marker sailed through: its pin model poisoned the stored session model (event-session-lifecycle), became the resolvers current prompt config (session-prompt-config-resolver backward scan + resolveLatestSessionPromptConfig), and vetoed the correct working-model checkpoint (recovery validateCheckpointModel). Observed 2026-09-27T23:37Z ses_f22570: kimi session hijacked to glm-5.3-flash primary after compaction; the injector dispatched the hijack prompt while the reroute correctly reissued kimi. Fix: detect marker rows by their compaction part in all three paths.",
+      "markers": [
+        "compaction-part-marker"
+      ],
+      "overlapsWith": [
+        "13-compaction-pin-checkpoint"
+      ],
+      "orderNote": "Independent of 13 (pin-state guard); this fixes the structural detection. Apply after 13."
     }
   ],
   "externalFixes": [
