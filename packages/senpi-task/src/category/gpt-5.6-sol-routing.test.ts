@@ -76,7 +76,7 @@ describe("GPT-5.6 Sol category routing", () => {
     })
   })
 
-  test("#given only Vercel Terra #when unspecified-low resolves #then it uses the high gateway rung", () => {
+  test("#given only an unlisted Vercel gateway's Terra #when unspecified-low resolves #then the gateway is not used", () => {
     // given
     const terraModel: FakeModel = { provider: "vercel", id: "openai/gpt-5.6-terra" }
     const terraRegistry = {
@@ -89,13 +89,6 @@ describe("GPT-5.6 Sol category routing", () => {
     const result = resolveCategory("unspecified-low", {}, terraRegistry)
 
     // then
-    expect(result.kind).toBe("resolved")
-    if (result.kind !== "resolved") throw new Error("Expected unspecified-low to resolve")
-    expect(result.spec).toMatchObject({
-      provider: "vercel",
-      modelId: "openai/gpt-5.6-terra",
-      variant: "high",
-    })
-    expect(result.modelSelection.fallbackEntry?.model).toBe("gpt-5.6-terra")
+    expect(result.kind).toBe("model_unavailable")
   })
 })

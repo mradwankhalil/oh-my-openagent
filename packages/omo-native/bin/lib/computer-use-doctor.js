@@ -53,6 +53,12 @@ export function formatComputerUseDoctorLines(report) {
         `FAIL computer use engine: ${report.diagnostic.code}: ${report.diagnostic.message} ${report.diagnostic.cause}`.trimEnd(),
         `INFO computer use engine paths tried: ${report.diagnostic.attemptedPaths.join(", ") || "<none>"}`,
       ]
+    case "not-installed":
+      return [
+        baseLine(report),
+        "INFO computer use engine: not installed yet; it is downloaded the first time computer use starts",
+        `INFO computer use engine paths checked: ${report.attemptedPaths.join(", ") || "<none>"}`,
+      ]
     case "failed":
       return [
         baseLine(report),

@@ -15,6 +15,20 @@ const FORBIDDEN = /\b403\b|forbidden/i
 const ACCOUNT_SCOPED_403 = /account|credential|token|api[ _-]?key|organization|subscription/i
 const MODEL_SCOPED = /\bmodels?\b/i
 
+// A spent usage, quota or billing limit. Scoped to one model when the text names a model, a model family
+// or premium models (a Fable-only weekly cap, Copilot premium requests); otherwise the whole account is
+// spent, so its other rungs fail the same way and go last.
+const USAGE_LIMIT =
+  /quota|usage[_ ]limit|\bhit\s+your\b[^.]*\blimit\b|\b(?:session|weekly|monthly|daily|hourly|\d+[- ]hour)\s+limit\b|limit\s+exhausted|insufficient[_ ](?:quota|credits?|balance)|credit[_ ]balance|credits?[_ ]required|billing|blocking_limit/i
+const MODEL_SCOPED_LIMIT = /\bmodels?\b|\bpremium\b|\b(?:opus|sonnet|haiku|fable|mythos)\b/i
+
+export type UsageLimitScope = "model" | "account"
+
+export function usageLimitScope(message: string): UsageLimitScope | undefined {
+  if (!USAGE_LIMIT.test(message)) return undefined
+  return MODEL_SCOPED_LIMIT.test(message) ? "model" : "account"
+}
+
 export function isCredentialFailure(message: string, modelId?: string): boolean {
   if (CREDENTIAL_REJECTED.test(message)) return true
   if (!FORBIDDEN.test(message) || !ACCOUNT_SCOPED_403.test(message)) return false
@@ -47,15 +61,28 @@ export function terminalFailureMessage(record: TaskRecord | null | undefined, fa
 export type RuntimeFallbackCandidates = {
   readonly remaining: readonly ResolvedModelRecord[]
   readonly skipped: readonly ResolvedModelRecord[]
+  readonly limit?: UsageLimitScope
 }
 
-/** The fallback list to walk after a failed turn, minus the failed provider's rungs when its credential is dead. */
+/** The fallback list to walk after a failed turn: a dead credential drops the failed provider's rungs, an account-wide usage limit moves them last. */
 export function runtimeFallbackCandidates(record: TaskRecord, failureMessage: string): RuntimeFallbackCandidates {
   const fallbacks = record.fallback_models ?? []
   const provider = providerOf(record)
-  if (provider === undefined || !isCredentialFailure(failureMessage, modelIdOf(record))) return { remaining: fallbacks, skipped: [] }
+  if (provider !== undefined && isCredentialFailure(failureMessage, modelIdOf(record))) {
+    return {
+      remaining: fallbacks.filter((model) => model.provider !== provider),
+      skipped: fallbacks.filter((model) => model.provider === provider),
+    }
+  }
+  const limit = usageLimitScope(failureMessage)
+  if (limit === undefined) return { remaining: fallbacks, skipped: [] }
+  if (limit === "model" || provider === undefined) return { remaining: fallbacks, skipped: [], limit }
   return {
-    remaining: fallbacks.filter((model) => model.provider !== provider),
-    skipped: fallbacks.filter((model) => model.provider === provider),
+    remaining: [
+      ...fallbacks.filter((model) => model.provider !== provider),
+      ...fallbacks.filter((model) => model.provider === provider),
+    ],
+    skipped: [],
+    limit,
   }
 }

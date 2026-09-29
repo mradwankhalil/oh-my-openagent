@@ -39,7 +39,15 @@ export const PAYLOAD_SCRIPT = join("scripts", "install.mjs")
 // plain JS, so this bundle is its route to the TypeScript resolver; omo-senpi installs never load it.
 export const CATEGORY_COVERAGE_ENTRY = join(packageDir, "category-coverage-entry.ts")
 export const CATEGORY_COVERAGE_ARTIFACT = join("runtime", "category-coverage", "index.js")
-export const NATIVE_REQUIRED_ARTIFACTS = [...REQUIRED_PLUGIN_ARTIFACTS, CATEGORY_COVERAGE_ARTIFACT] as const
+// The bundle inlines the computer-use doctor, whose prelude assets are read from beside the bundle
+// at import time: the same contract build-extension-core.mjs keeps for extensions/ (#9193).
+const COMPUTER_PRELUDE_ASSET_SOURCE = join(repoRoot, "packages", "senpi-desktop-prelude", "src", "assets.generated.json")
+export const CATEGORY_COVERAGE_PRELUDE_ASSET = join("runtime", "category-coverage", "assets.generated.json")
+export const NATIVE_REQUIRED_ARTIFACTS = [
+  ...REQUIRED_PLUGIN_ARTIFACTS,
+  CATEGORY_COVERAGE_ARTIFACT,
+  CATEGORY_COVERAGE_PRELUDE_ASSET,
+] as const
 
 interface BuildOptions {
   readonly outputDir: string
@@ -147,6 +155,7 @@ function buildCategoryCoverageRuntime(outfile: string): void {
   )
   if (result.error !== undefined) throw result.error
   if (result.status !== 0) throw new Error(`category-coverage runtime build failed with exit code ${result.status ?? 1}`)
+  copyFileSync(COMPUTER_PRELUDE_ASSET_SOURCE, join(dirname(outfile), "assets.generated.json"))
 }
 
 function copyTree(sourceDir: string, outputDir: string): void {

@@ -193,6 +193,34 @@
       "orderNote": "Depends on 11's cancellationRequested field. Keep last. Covered by PR #8167 (commit 924555133), which also carries 11 in dependency order."
     },
     {
+      "id": "13-compaction-pin-checkpoint",
+      "title": "Checkpoint capture skips the active compaction pin model",
+      "commit": "85e32de939e72ebdccfe3a4b731ab96404c834e4",
+      "patch": "local-fixes/patches/13-compaction-pin-checkpoint.patch",
+      "why": "The compaction-context-injector snapshots the session model before compaction. A compaction marker/summary row tagged with the WORKING agent (not agent=compaction) carries the summarizer pin model (glm-5.3-flash), which every existing exclusion let through - resolveValidatedModel skipped only agent===compaction. The checkpoint then re-injected the pin as the session model after compaction, hijacking continuation onto the summarizer (observed 2026-09-27T20:52Z, ses_f22570befffeKtPFEZc6tHsCBM: kimi session continued on glm-5.3-flash). Fix: preemptive-compaction-trigger records the summarize target in compaction-pin-state; the checkpoint resolver and its stored-model fallback skip any model equal to that pin, so capture keeps the last real working model. Hardened 2026-09-28: deduped imports (tsgo TS2300 x4), restored the 3 resolver tests the original commit deleted, added a guard test for core summary rows on the configured compaction agent (opencode-core-fix compaction-model-override), and regenerated this patch as UTF-8 (was UTF-16LE, unusable by git apply).",
+      "markers": [
+        "compaction-pin-checkpoint"
+      ],
+      "overlapsWith": [
+        "02-hijack-working-model"
+      ],
+      "orderNote": "Independent of 02 (which fixes the reroute side); this fixes the injector side. Apply after 02."
+    },
+    {
+      "id": "14-compaction-part-marker",
+      "title": "Marker rows detected by their compaction part, not agent name alone",
+      "commit": "62ecde3d0adf5f00b47180d944b6a6f8a8c8b500",
+      "patch": "local-fixes/patches/14-compaction-part-marker.patch",
+      "why": "A compaction marker row carries the WORKING agent plus a compaction PART, but every exclusion (lifecycle isCompactionMessage, resolver resolveValidatedModel, reroute isCompactionArtifact) checked only the agent NAME. The marker sailed through: its pin model poisoned the stored session model (event-session-lifecycle), became the resolvers current prompt config (session-prompt-config-resolver backward scan + resolveLatestSessionPromptConfig), and vetoed the correct working-model checkpoint (recovery validateCheckpointModel). Observed 2026-09-27T23:37Z ses_f22570: kimi session hijacked to glm-5.3-flash primary after compaction; the injector dispatched the hijack prompt while the reroute correctly reissued kimi. Fix: detect marker rows by their compaction part in all three paths.",
+      "markers": [
+        "compaction-part-marker"
+      ],
+      "overlapsWith": [
+        "13-compaction-pin-checkpoint"
+      ],
+      "orderNote": "Independent of 13 (pin-state guard); this fixes the structural detection. Apply after 13."
+    },
+    {
       "id": "15-opencode-v2-compaction-event-alias",
       "title": "Bridge v2 compaction/idle event names to the v1 hook surface",
       "commit": "bce3fe471",

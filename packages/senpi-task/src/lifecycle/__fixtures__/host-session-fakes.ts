@@ -1,4 +1,5 @@
 import type { HostSessionIdentity, TaskRecord } from "../../state"
+import { NO_HOST_ENDPOINT } from "../host-session"
 import type { LifecycleDeps, ResidentHandle } from "../port"
 import type { TaskRecordStore } from "../../store"
 import { FakeRegistry, settings, type CallLog } from "./lifecycle-fakes"
@@ -92,6 +93,9 @@ export type HostLifecycleInput = {
   readonly respawn?: LifecycleDeps["respawn"]
   readonly config?: Record<string, unknown>
   readonly maxDrainAttempts?: number
+  readonly deferredRetryBackoffMs?: readonly number[]
+  /** Runs inside every recorded wait, so a test can move the daemon between retries. */
+  readonly onWait?: (ms: number) => void
 }
 
 /** Lifecycle deps wired to a fake daemon, a recorded signaller, and a recorded (never real) wait. */
@@ -108,6 +112,7 @@ export function hostLifecycleDeps(input: HostLifecycleInput): HostLifecycleFixtu
       : await input.respawn(record, sessionPath)
   }
   const deps: LifecycleDeps = {
+    hostEndpoint: NO_HOST_ENDPOINT,
     store: input.store,
     registry,
     config: settings({ ttl_ms: 1_000, resident_idle_timeout_ms: 60_000, ...input.config }),
@@ -133,8 +138,10 @@ export function hostLifecycleDeps(input: HostLifecycleInput): HostLifecycleFixtu
       maxDrainAttempts: input.maxDrainAttempts ?? 10,
       defaultRetryAfterMs: 2_000,
       daemonLossBackoffMs: [1_000, 4_000, 16_000],
+      deferredRetryBackoffMs: input.deferredRetryBackoffMs ?? [],
       wait: (ms) => {
         waits.push(ms)
+        input.onWait?.(ms)
         return Promise.resolve()
       },
     },

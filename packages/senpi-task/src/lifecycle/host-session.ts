@@ -26,8 +26,27 @@ export function hostSessionResumePath(record: TaskRecord | null | undefined): st
 export type HostSessionProbe = {
   daemonAlive(hostSession: HostSessionIdentity): Promise<boolean>
   sessionLive(hostSession: HostSessionIdentity): Promise<boolean>
-  /** Drop the cached snapshot so the NEXT pass asks the daemon again. */
-  refresh(): void
+  /** Refresh one recorded endpoint, or all snapshots when starting a reconcile/TTL pass. */
+  refresh(socket?: string): void
+}
+
+/**
+ * How revival reaches a RECORDED endpoint beyond probing it. `isOwn` names the endpoint this session
+ * runs behind (never ensured from inside); `ensure` re-ensures any other recorded socket, and only
+ * that socket; `notice` surfaces why a record stays parked. A lifecycle with no task host passes
+ * `NO_HOST_ENDPOINT`: probe only, never an ensure.
+ */
+export type HostEndpointPort = {
+  readonly isOwn: (socket: string) => boolean
+  readonly ensure: (socket: string) => Promise<"ensured" | "incompatible" | "unreachable">
+  readonly notice: (reason: "host_incompatible" | "own_host_unreachable", socket: string) => void
+}
+
+/** The explicit "this lifecycle has no task host" answer: a silent recorded endpoint stays `host_unreachable`. */
+export const NO_HOST_ENDPOINT: HostEndpointPort = {
+  isOwn: () => false,
+  ensure: () => Promise.resolve("unreachable"),
+  notice: () => undefined,
 }
 
 export type HostSessionProbePorts = {
@@ -60,7 +79,10 @@ export function createHostSessionProbe(ports: HostSessionProbePorts): HostSessio
     daemonAlive: async (hostSession) => (await snapshot(hostSession.socket)).daemonAlive,
     sessionLive: async (hostSession) =>
       (await snapshot(hostSession.socket)).livePaths.has(canonicalSessionPath(hostSession.session_path)),
-    refresh: () => passes.clear(),
+    refresh: (socket) => {
+      if (socket === undefined) passes.clear()
+      else passes.delete(socket)
+    },
   }
 }
 
@@ -95,6 +117,8 @@ export type HostSessionRetryPolicy = {
   readonly maxDrainAttempts: number
   readonly defaultRetryAfterMs: number
   readonly daemonLossBackoffMs: readonly number[]
+  /** Background retries of a reconcile that deferred a daemon-hosted child; spans a handoff drain. */
+  readonly deferredRetryBackoffMs: readonly number[]
   readonly wait: (ms: number) => Promise<void>
 }
 
@@ -102,6 +126,7 @@ export const DEFAULT_HOST_SESSION_RETRY_POLICY: HostSessionRetryPolicy = {
   maxDrainAttempts: 10,
   defaultRetryAfterMs: 2_000,
   daemonLossBackoffMs: [1_000, 4_000, 16_000],
+  deferredRetryBackoffMs: [5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 300_000, 300_000, 300_000, 300_000],
   wait: (ms) =>
     new Promise((resolve) => {
       setTimeout(resolve, ms).unref?.()

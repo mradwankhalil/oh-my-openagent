@@ -159,8 +159,16 @@ All primitives live in `components/ui/*` (existing shadcn shells re-tokened) or 
 
 ### CommandBar (`components/landing/install-command.tsx`)
 
-- The primary CTA of the site (omp.sh grammar). Row: prompt cell (40px wide, `--accent` `$`/`>` glyph on `--ink-2`), mono command in `--text-hi` on `--ink-1`, fixed-width COPY cell (mono uppercase 11px, `--text-lo` → `--text-hi` on hover). A click grows an `--accent-8` wash across the cell (`scaleX 0 → 1` on `--ease-spring`), blur-swaps COPY out (`--dur-swap-out`, blur `--swap-blur`) and a check (springing `scale .4 → 1`) + "COPIED" in (`--dur-swap-in`) in `--accent` for 2s. An `aria-live=polite` status announces the copy. The cell width never changes. 1px `--line` border, 0px radius, height 48px; on < sm the command scrolls horizontally inside the cell (no wrap) and COPY stays reachable.
-- One command, no tab row (v3): every CommandBar on the site renders `bun install -g omo-ai`. Host/edition switching was removed with the Editions section; the bar is the whole install story.
+- The primary CTA of the site (omp.sh grammar). Row: prompt cell (40px wide, `--accent` `$`/`>` glyph on `--ink-2`), mono command in `--text-hi` on `--ink-1`, fixed-width COPY cell (mono uppercase 11px, `--text-lo` → `--text-hi` on hover). A click grows an `--accent-8` wash across the cell (`scaleX 0 → 1` on `--ease-spring`), blur-swaps COPY out (`--dur-swap-out`, blur `--swap-blur`) and a check (springing `scale .4 → 1`) + "COPIED" in (`--dur-swap-in`) in `--accent` for 2s. An `aria-live=polite` status announces the copy. The cell width never changes. 1px `--line` border, 0px radius, height 48px; on < sm the command scrolls horizontally inside the cell (no wrap) and COPY stays reachable. The command cell is `w-0 flex-1`, so a long command never widens the column around the bar.
+- The prompt glyph names the shell: `$` (sh), `PS>` (PowerShell), `>` (CMD). CommandBars on the site only appear inside InstallTabs.
+
+### InstallTabs (`components/landing/install-tabs.tsx`)
+
+- Every install surface (hero, CTA, `/docs/install`) renders one CommandBar per shell under a tab row (2026-09-29, replaces v3's single `bun install -g omo-ai` bar): `macOS, Linux, WSL` → `curl -fsSL https://get.omo.dev/install.sh | bash`, `Windows PowerShell` → `irm … | iex`, `Windows CMD` → `powershell -ExecutionPolicy Bypass -c "irm … | iex"`. Commands live in `lib/install-targets.ts` (never in messages); below `sm` the labels drop the `Windows` prefix.
+- Tab row: eyebrow type, 44px tall, `--line` hairline under the row; the selected tab is `--text-hi` with a 1px `--accent` underline over that hairline, others `--text-lo` → `--text-hi` on hover (color only, `--dur-micro`). `role=tablist` with roving tabindex; arrow keys, Home and End select and focus (automatic activation).
+- Detection: `detectInstall()` reads `navigator.userAgentData.platform` first, then the UA string (plus `maxTouchPoints` for iPadOS asking for the desktop site). Windows → PowerShell; macOS, Linux, ChromeOS → sh; phones, tablets and unknown agents → sh plus the caption "run this on your computer".
+- No flash, no shift: a script in `<head>` (root layout) runs `detectInstall()` before the body is parsed and marks `<html>` with `data-install` (and `data-install-hint`); CSS picks the visible panel, the selected tab and the caption from it until the visitor picks a tab, which sets the widget's own `data-show`. Nothing inside the hero blocks the parser (an inline script there let Chrome paint a half-parsed hero, CLS 0.11). Panels are equal height, and both captions share one grid cell so the taller one reserves the space.
+- No JavaScript: a `<noscript>` style hides the tab row and shows all three panels, each under its label.
 - Glow: none by default; `focus-within` adds the inset ring `0 0 0 1px var(--accent-32)`.
 
 ### MorphStage (`components/landing/crafted/morph-stage.tsx`)
@@ -395,7 +403,9 @@ Roboto Mono family, Regular 400 followed by Bold 700.
   apart, each a 52 px mark + 18 px gap + label. Stars: GitHub mark, whole-thousand
   floor, uppercase K and plus, e.g. 69,999 → `69K+ Stars`. Downloads: npm mark,
   all-time npm total of `oh-my-opencode` + `oh-my-openagent` + `omo-ai` +
-  `lazycodex-ai` (the same figure as the site, `lib/npm-downloads.ts`), floored to
+  `lazycodex-ai` (`lib/npm-downloads.ts`) plus every `omo-*` compiled binary
+  downloaded from GitHub releases (`lib/native-downloads.ts`), the same figure
+  as the site total, floored to
   0.1 M, e.g. 4,032,665 → `4M+ Downloads`, 3,894,680 → `3.8M+ Downloads`.
   Counts below 1,000 remain exact. No website label.
 - Star states: fresh/cached for up to 5 minutes; last known good for at most

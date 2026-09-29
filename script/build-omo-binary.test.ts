@@ -27,6 +27,7 @@ import {
   PLUGIN_PAYLOAD_FILES,
   RELEASE_BINARY_TARGETS,
   buildRuntimeManifest,
+  runtimeManifestFileContent,
   collectStagedFiles,
   createStampedPackageJson,
   embeddedNameForRelPath,
@@ -351,6 +352,21 @@ describe("runtime manifest", () => {
     expect(manifestA.manifestSha).toBe(manifestB.manifestSha)
     rmSync(first, { recursive: true, force: true })
     rmSync(second, { recursive: true, force: true })
+  })
+})
+
+describe("embedded runtime manifest file", () => {
+  test("#given a musl target #when the manifest file is written #then it names that release asset flavor outside the digest", async () => {
+    const stageDir = makeTempDir("omo-manifest-target-")
+    writeFileSync(join(stageDir, "package.json"), createStampedPackageJson("1.2.3"), "utf8")
+    const manifest = await buildRuntimeManifest(stageDir, { omoAiVersion: "1.2.3", enginePin: "2026.8.24" })
+
+    const written = JSON.parse(runtimeManifestFileContent(manifest, "linux-x64-musl"))
+
+    expect(written.releaseTarget).toBe("linux-x64-musl")
+    expect(written.marker).toBe("OMO_RUNTIME_MANIFEST_V1")
+    expect(written.manifestSha).toBe(manifest.manifestSha)
+    rmSync(stageDir, { recursive: true, force: true })
   })
 })
 

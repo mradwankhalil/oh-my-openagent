@@ -11,6 +11,7 @@ import {
 import { DESKTOP_ENGINE_CHECKSUMS_ASSET, DESKTOP_ENGINE_RELEASE_HOSTS, desktopEngineReleaseAssetName } from "./release-assets";
 
 const RELEASE_BASE = "https://github.com/code-yeongyu/oh-my-openagent/releases/download";
+const MUSL_SUFFIX = "-musl";
 
 export interface AcquireDesktopEngineOptions {
 	readonly version: string;
@@ -45,8 +46,11 @@ export async function acquireDesktopEngine(options: AcquireDesktopEngineOptions)
 		const separator = host.indexOf("-");
 		if (separator < 1 || separator === host.length - 1) return unavailable(`Invalid host: ${host}`);
 		const platform = host.slice(0, separator);
-		const arch = host.slice(separator + 1);
-		const located = locateDesktopEngine({ ...options.locatorOptions, platform, arch });
+		const rest = host.slice(separator + 1);
+		// The host string names the libc; this process's libc must not re-decide it.
+		const libc = platform === "linux" && rest.endsWith(MUSL_SUFFIX) ? "musl" : "glibc";
+		const arch = libc === "musl" ? rest.slice(0, -MUSL_SUFFIX.length) : rest;
+		const located = locateDesktopEngine({ ...options.locatorOptions, platform, arch, libc });
 		attemptedPaths = located.diagnostic?.attemptedPaths ?? [];
 		if (located.path !== null) return { path: located.path };
 		if (located.diagnostic.code === "quarantined") return unavailable(located.diagnostic.cause);

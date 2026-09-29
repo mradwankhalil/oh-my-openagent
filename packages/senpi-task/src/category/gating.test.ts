@@ -316,7 +316,7 @@ describe("category activation gating", () => {
       expect(result.availableCategories).not.toContain("ultrabrain")
     })
 
-    test("#when a real vercel gateway id is present #then the gate still opens", () => {
+    test("#when only an unlisted gateway re-publishes the gate model #then the gate stays closed", () => {
       // given
       const models = registry([model("vercel", "openai/gpt-5.6-sol")])
 
@@ -324,8 +324,8 @@ describe("category activation gating", () => {
       const result = resolveCategory("ultrabrain", {}, models)
 
       // then
-      expect(result.kind).toBe("resolved")
-      expect(result.availableCategories).toContain("ultrabrain")
+      expect(result.kind).toBe("model_unavailable")
+      expect(result.availableCategories).not.toContain("ultrabrain")
     })
   })
 

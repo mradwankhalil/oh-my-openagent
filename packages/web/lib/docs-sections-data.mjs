@@ -15,3 +15,7 @@ export const DOC_SECTIONS_DATA = /** @type {const} */ ([
   { id: "features", file: "reference/features.md", title: "Features" },
   { id: "manifesto", file: "manifesto.md", title: "Manifesto" },
 ])
+
+export const DOC_PAGES_DATA = /** @type {const} */ ([
+  { file: "guide/install.md", route: "/docs/install" },
+])

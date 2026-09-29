@@ -105,8 +105,8 @@ impl Engine {
                 let resumed = self.stop_paths().resume(&token).map_err(Failure::Engine);
                 Ok(self.stop_path_changed(resumed.and_then(to_result)))
             }
-            // Clipboard lands with the backends.
-            Method::ClipboardRead | Method::ClipboardWrite => Err(Failure::not_implemented(method)),
+            Method::ClipboardRead => parse::<EmptyParams>(params).and_then(|_| op(Op::ClipboardRead)),
+            Method::ClipboardWrite => op(Op::ClipboardWrite(parse(params)?)),
             Method::Cancel => Ok(Route::Cancel(parse::<CancelParams>(params)?.id)),
             Method::TestAdvanceClock => {
                 let Some(clock) = self.fake_clock() else {

@@ -93,6 +93,15 @@ pub(crate) fn window_id(element: &AXUIElement) -> Option<u32> {
     (unsafe { get_id(element, &mut id) } == AXError::Success).then_some(id)
 }
 
+/// The CGWindowID of the window owning `element`: the element itself when
+/// it is a window, else its `AXWindow`.
+pub(super) fn owner_window_id(element: &AXUIElement) -> Option<u32> {
+    if copy_string(element, "AXRole").as_deref() == Some("AXWindow") {
+        return window_id(element);
+    }
+    window_id(&*copy_element(element, "AXWindow")?)
+}
+
 pub(super) fn copy_attribute_result(
     element: &AXUIElement,
     attribute: &str,

@@ -1,0 +1,223 @@
+From 85e32de939e72ebdccfe3a4b731ab96404c834e4 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 28 Sep 2026 00:21:15 +0300
+Subject: [PATCH] fix(compaction): checkpoint capture skips the active
+ compaction pin model (compaction-pin-checkpoint)
+
+---
+ .../session-prompt-config-resolver.test.ts    | 89 ++++++++++++++++++-
+ .../session-prompt-config-resolver.ts         | 13 ++-
+ .../hooks/preemptive-compaction-trigger.ts    |  6 ++
+ .../src/shared/compaction-pin-state.ts        | 26 ++++++
+ 4 files changed, 131 insertions(+), 3 deletions(-)
+ create mode 100644 packages/omo-opencode/src/shared/compaction-pin-state.ts
+
+diff --git a/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.test.ts b/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.test.ts
+index 1f7c5a550..06031f2fd 100644
+--- a/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.test.ts
++++ b/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.test.ts
+@@ -1,6 +1,7 @@
+-import { afterEach, describe, expect, it } from "bun:test"
++import { afterEach, describe, expect, it, test } from "bun:test"
+ 
+ import { _resetForTesting } from "../../features/claude-code-session-state"
++import { clearActiveCompactionPin, setActiveCompactionPin } from "../../shared/compaction-pin-state"
+ import { clearSessionModel, setSessionModel } from "../../shared/session-model-state"
+ import { clearSessionTools } from "../../shared/session-tools-store"
+ import {
+@@ -8,6 +9,92 @@ import {
+   resolveSessionPromptConfig,
+ } from "./session-prompt-config-resolver"
+ 
++// fix: compaction-pin-checkpoint — the backward scan must not accept a model
++// from compaction marker/summary rows; they carry the summarizer pin, not the
++// working model, and re-injecting them hijacks the session after compaction.
++
++const fakeCtx = (messages: Array<Record<string, unknown>>) => ({
++  client: {
++    session: {
++      messages: async () => ({ data: messages }),
++    },
++  },
++  directory: "test",
++})
++
++describe("resolveSessionPromptConfig (compaction-pin-checkpoint)", () => {
++  test("skips the compaction marker's pin model and keeps the last working model", async () => {
++    const ctx = fakeCtx([
++      { info: { agent: "sisyphus", model: { providerID: "kimi-for-coding", modelID: "k3-256k" } } },
++      { info: { agent: "compaction", model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" } } },
++    ])
++    const config = await resolveSessionPromptConfig(ctx as never, "ses_test")
++    expect(config.model).toEqual({ providerID: "kimi-for-coding", modelID: "k3-256k" })
++  })
++
++  test("compaction-pin-checkpoint: marker tagged with the working agent carrying the pin model is skipped", async () => {
++    setActiveCompactionPin("ses_pin", { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++    try {
++      const ctx = fakeCtx([
++        { info: { agent: "Sisyphus - ultraworker", model: { providerID: "kimi-for-coding", modelID: "k3-256k" } } },
++        { info: { agent: "Sisyphus - ultraworker", model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" } } },
++      ])
++      const config = await resolveSessionPromptConfig(ctx as never, "ses_pin")
++      expect(config.model).toEqual({ providerID: "kimi-for-coding", modelID: "k3-256k" })
++    } finally {
++      clearActiveCompactionPin("ses_pin")
++    }
++  })
++
++  test("compaction-pin-checkpoint: model resolution falls through when only pin-carrying rows exist", async () => {
++    setActiveCompactionPin("ses_pin2", { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++    try {
++      const ctx = fakeCtx([
++        { info: { agent: "Sisyphus - ultraworker", model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" } } },
++      ])
++      const config = await resolveSessionPromptConfig(ctx as never, "ses_pin2")
++      expect(config.model).toBeUndefined()
++    } finally {
++      clearActiveCompactionPin("ses_pin2")
++    }
++  })
++
++  test("compaction-pin-checkpoint: a core summary row on the configured compaction agent never becomes the working model", async () => {
++    // OMO pins the preemptive summarize to glm-5.3-flash, but the core's configured
++    // compaction agent (opencode-core-fix compaction-model-override) summarizes on
++    // openai/gpt-6-luna:low and tags the summary row agent=compaction with flat fields.
++    setActiveCompactionPin("ses_pin3", { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" })
++    try {
++      const ctx = fakeCtx([
++        { info: { agent: "Sisyphus - ultraworker", providerID: "kimi-for-coding", modelID: "k3-256k", variant: "high" } },
++        { info: { agent: "Sisyphus - ultraworker", model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" } } },
++        { info: { agent: "compaction", providerID: "openai", modelID: "gpt-6-luna", variant: "low" } },
++      ])
++      const config = await resolveSessionPromptConfig(ctx as never, "ses_pin3")
++      expect(config.model).toEqual({ providerID: "kimi-for-coding", modelID: "k3-256k", variant: "high" })
++      expect(config.agent).toBe("Sisyphus - ultraworker")
++    } finally {
++      clearActiveCompactionPin("ses_pin3")
++    }
++  })
++
++  test("still resolves the model when no compaction rows exist", async () => {
++    const ctx = fakeCtx([
++      { info: { agent: "sisyphus", model: { providerID: "kimi-for-coding", modelID: "k3-256k" } } },
++    ])
++    const config = await resolveSessionPromptConfig(ctx as never, "ses_test")
++    expect(config.model).toEqual({ providerID: "kimi-for-coding", modelID: "k3-256k" })
++  })
++
++  test("falls back to stored model only when no non-compaction message carries one", async () => {
++    const ctx = fakeCtx([
++      { info: { agent: "compaction", model: { providerID: "zai-coding-plan", modelID: "glm-5.3-flash" } } },
++    ])
++    const config = await resolveSessionPromptConfig(ctx as never, "ses_test")
++    expect(config.model).toBeUndefined()
++  })
++})
++
+ type SessionMessage = {
+   info?: {
+     agent?: string
+diff --git a/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.ts b/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.ts
+index cc42d7a1f..b95420322 100644
+--- a/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.ts
++++ b/packages/omo-opencode/src/hooks/compaction-context-injector/session-prompt-config-resolver.ts
+@@ -1,5 +1,6 @@
+ import { getSessionAgent } from "../../features/claude-code-session-state"
+ import type { CompactionAgentConfigCheckpoint } from "../../shared/compaction-agent-config-checkpoint"
++import { isActiveCompactionPin } from "../../shared/compaction-pin-state"
+ import { log } from "../../shared/logger"
+ import { normalizeSDKResponse } from "../../shared/normalize-sdk-response"
+ import { normalizePromptTools } from "../../shared/prompt-tools"
+@@ -55,7 +56,15 @@ export async function resolveSessionPromptConfig(
+ 
+       if (!promptConfig.model) {
+         const model = resolveValidatedModel(info)
+-        if (model) {
++        // fix: compaction-pin-checkpoint — a marker/summary row carrying the
++        // active compaction pin (often tagged with the working agent, not
++        // "compaction") is the summarizer's model, never the working model.
++        if (model && isActiveCompactionPin(sessionID, model)) {
++          log("[compaction-context-injector] skipped compaction pin model in checkpoint capture (compaction-pin-checkpoint)", {
++            sessionID,
++            skipped: `${model.providerID}/${model.modelID}`,
++          })
++        } else if (model) {
+           promptConfig.model = model
+         }
+       }
+@@ -79,7 +88,7 @@ export async function resolveSessionPromptConfig(
+     })
+   }
+ 
+-  if (!promptConfig.model && storedModel) {
++  if (!promptConfig.model && storedModel && !isActiveCompactionPin(sessionID, storedModel)) {
+     promptConfig.model = storedModel
+   }
+ 
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+index 9b7a096d2..2596fd761 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+@@ -4,6 +4,7 @@ import {
+   type ContextLimitModelCacheState,
+ } from "../shared/context-limit-resolver"
+ import { log } from "../shared/logger"
++import { clearActiveCompactionPin, setActiveCompactionPin } from "../shared/compaction-pin-state"
+ 
+ import { resolveCompactionModelDecision } from "./shared/compaction-model-resolver"
+ import { resolveEmptySummaryFromSession } from "./preemptive-compaction-empty-summary"
+@@ -144,6 +145,10 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+       usageRatio: Number(usageRatio.toFixed(4)),
+     })
+ 
++    // fix: compaction-pin-checkpoint — record the summarize target so the
++    // context-injector checkpoint capture can exclude it from the working model.
++    setActiveCompactionPin(sessionID, { providerID: decision.providerID, modelID: decision.modelID })
++
+     const summarizePromise = ctx.client.session.summarize({
+       path: { id: sessionID },
+       body: { providerID: decision.providerID, modelID: decision.modelID, auto: true },
+@@ -155,6 +160,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+       if (summarizeStartedAt.get(sessionID)?.attemptID !== attempt.attemptID) return
+       compactionInProgress.delete(sessionID)
+       summarizeStartedAt.delete(sessionID)
++      clearActiveCompactionPin(sessionID)
+     }
+     void summarizePromise.then(releaseInProgress, releaseInProgress)
+ 
+diff --git a/packages/omo-opencode/src/shared/compaction-pin-state.ts b/packages/omo-opencode/src/shared/compaction-pin-state.ts
+new file mode 100644
+index 000000000..16d7aaafc
+--- /dev/null
++++ b/packages/omo-opencode/src/shared/compaction-pin-state.ts
+@@ -0,0 +1,26 @@
++// fix: compaction-pin-checkpoint — tracks the model a session's compaction is
++// currently pinned to, so checkpoint capture never mistakes the summarizer's
++// model for the session's working model (post-compaction hijack).
++type Pin = { providerID: string; modelID: string }
++
++const pins = new Map<string, Pin>()
++
++export function setActiveCompactionPin(sessionID: string, pin: Pin): void {
++  pins.set(sessionID, pin)
++}
++
++export function getActiveCompactionPin(sessionID: string): Pin | undefined {
++  return pins.get(sessionID)
++}
++
++export function clearActiveCompactionPin(sessionID: string): void {
++  pins.delete(sessionID)
++}
++
++export function isActiveCompactionPin(
++  sessionID: string,
++  model: { providerID?: string; modelID?: string } | undefined,
++): boolean {
++  const pin = pins.get(sessionID)
++  return !!pin && !!model?.providerID && !!model?.modelID && pin.providerID === model.providerID && pin.modelID === model.modelID
++}
+-- 
+2.55.0.windows.3
+

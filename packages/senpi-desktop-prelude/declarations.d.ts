@@ -18,7 +18,7 @@ interface ComputerDragOptions extends ComputerDeliveryOptions {
 	modifiers?: string[];
 }
 
-/** Options for wheel scrolling; `dx`/`dy` are scroll units at the pointer position. */
+/** Options for wheel scrolling at the pointer position; `dx`/`dy` are pixels, the same unit on every OS, and one mouse-wheel notch is about 40 px (so `dy: 120` scrolls about three notches). The direction is semantic and the same on every OS: a positive `dy` moves the view toward the end of the content (the content moves up) and a positive `dx` toward its right edge, regardless of the user's natural-scrolling setting. */
 interface ComputerScrollOptions extends ComputerDeliveryOptions {
 	dx?: number;
 	dy?: number;

@@ -58,7 +58,7 @@ describe("runCommentChecker stdin delivery (#6396)", () => {
     expect({ result, signals }).toEqual({ result: { hasComments: false, message: "" }, signals: ["SIGKILL"] })
   })
 
-  it("#given spawn throws synchronously #when the checker runs #then the result is empty", async () => {
+  it("#given spawn throws synchronously #when the checker runs #then no comments are reported and the start failure is exposed", async () => {
     // when
     const result = await runCommentChecker(
       { binaryPath: "/checker", hookInput: HOOK_INPUT },
@@ -71,7 +71,7 @@ describe("runCommentChecker stdin delivery (#6396)", () => {
     )
 
     // then
-    expect(result).toEqual({ hasComments: false, message: "" })
+    expect(result).toEqual({ hasComments: false, message: "", failure: { exitCode: null, stderr: "spawn EINVAL" } })
   })
 
   it("#given a file-sink stdin whose write rejects #when input is sent #then the send rejects with that error", async () => {

@@ -2,7 +2,7 @@
 
 use senpi_desktop_core::protocol_params::{
     AxClickParams, AxElementAtParams, AxPerformParams, AxQueryParams, AxRefParams, AxSetValueParams,
-    AxSnapshotParams, CaptureParams, DragParams, KeyChordParams, PointParams, RaiseWindowParams,
+    AxSnapshotParams, CaptureParams, ClipboardText, DragParams, KeyChordParams, PointParams, RaiseWindowParams,
     ScrollParams, TypeTextParams,
 };
 use senpi_desktop_core::types::{
@@ -36,6 +36,8 @@ pub enum Op {
     AxSetValue(AxSetValueParams),
     AxFocus(AxRefParams),
     AxClick(AxClickParams),
+    ClipboardRead,
+    ClipboardWrite(ClipboardText),
 }
 
 /// A request's result; serializes to its engine method's wire `result`
@@ -53,4 +55,5 @@ pub enum Response {
     MaybeNode(Option<AxNode>),
     Nodes(Vec<AxNode>),
     Attributes(Vec<(String, String)>),
+    Clipboard(ClipboardText),
 }

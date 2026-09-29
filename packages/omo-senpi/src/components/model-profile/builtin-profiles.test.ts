@@ -45,7 +45,6 @@ describe("BUILTIN_MODEL_PROFILES", () => {
     expect(recommended?.displayName).toBe("Recommended")
     expect(recommended?.family).toBeUndefined()
     expect(recommended?.tier).toBeUndefined()
-    expect(recommended?.rankedProvidersOnly).toBe(true)
   })
 
   // Mirrors senpi's RECOMMENDED_DEFAULT_MODELS (recommended-models/index.ts, senpi#2074), so the TUI

@@ -88,6 +88,9 @@ pub enum SinkOp {
         text: String,
         mode: DeliveryMode,
     },
+    ClipboardWrite {
+        text: String,
+    },
     KeyChord {
         target: Target,
         keys: Vec<KeyName>,

@@ -1,9 +1,12 @@
 import type { RpcSessionState, RpcTransportGoneError } from "@code-yeongyu/senpi"
 import { log } from "@oh-my-opencode/utils"
 
-import type { SenpiHostProtocolInfo } from "../../lazy/senpi-barrel"
+import { loadSenpiBarrel, type SenpiHostProtocolInfo } from "../../lazy/senpi-barrel"
 import { buildAutoUiResponse, type AutoAnswerableUiRequest } from "../rpc/ui-auto-answer"
 import type { ChildEventListener, RpcEntriesResult, RpcSwitchSessionResult } from "../types"
+import { socketAcceptsConnection } from "./busy-host"
+import { HostUnavailableError } from "./daemon"
+import { SESSION_PARKED_CAUSE } from "./exit-mapping"
 import {
   assertHostUsable,
   createSenpiRpcClient,
@@ -42,9 +45,20 @@ export type HostSessionCommand =
   | { readonly type: "followUp"; readonly message: string }
   | { readonly type: "abort" }
 
+/** Why a child parked itself instead of reattaching. */
+export type HostParkReason = "host_incompatible" | "own_host_unreachable" | "store_index_unavailable"
+
+/**
+ * Why the HOST parked a session it holds: its idle sweep (`idle_evicted`) or a generation handoff that
+ * put the session back on disk (`handoff_parked`). A `session_parked` frame maps through
+ * `SESSION_PARKED_CAUSE`.
+ */
+export type HostParkCause = "handoff_parked" | "idle_evicted"
+
 export interface HostSessionParked {
   readonly sessionId: string
   readonly sessionPath: string
+  readonly reason: HostParkReason | HostParkCause
 }
 
 export interface HostSessionClosed {
@@ -55,6 +69,7 @@ export interface HostSessionClosed {
 export interface HostSessionClientPorts {
   readonly createClient?: HostRpcClientFactory
   readonly probeProtocolInfo?: HostProtocolProbe
+  readonly socketAccepts?: (socketPath: string) => Promise<boolean>
 }
 
 export interface HostSessionClientOptions {
@@ -78,6 +93,7 @@ export class HostSessionClient {
   readonly transportGone: Promise<RpcTransportGoneError>
   private readonly createClient: HostRpcClientFactory
   private readonly probeProtocolInfo: HostProtocolProbe
+  private readonly socketAccepts: (socketPath: string) => Promise<boolean>
   private readonly transportLoss = Promise.withResolvers<RpcTransportGoneError>()
   private readonly eventListeners = new Set<ChildEventListener>()
   private readonly parkedListeners = new Set<(event: HostSessionParked) => void>()
@@ -91,6 +107,7 @@ export class HostSessionClient {
     this.socketPath = options.socketPath
     this.createClient = options.ports?.createClient ?? createSenpiRpcClient
     this.probeProtocolInfo = options.ports?.probeProtocolInfo ?? probeWithEngine
+    this.socketAccepts = options.ports?.socketAccepts ?? socketAcceptsConnection
     this.transportGone = this.transportLoss.promise
   }
 
@@ -113,7 +130,14 @@ export class HostSessionClient {
   }
 
   async open(input: HostSessionOpenInput): Promise<OpenedHostSession> {
-    const identity = assertHostUsable(await this.probeProtocolInfo(this.socketPath))
+    const probed = await this.probeProtocolInfo(this.socketPath)
+    if (probed === undefined && (await this.socketAccepts(this.socketPath))) {
+      throw new HostUnavailableError("host_busy", {
+        fallbackAllowed: false,
+        detail: "the daemon accepts connections but did not answer get_protocol_info",
+      })
+    }
+    const identity = assertHostUsable(probed)
     const client = await this.createClient({
       socketPath: this.socketPath,
       onDisconnect: (error) => this.handleTransportLoss(error),
@@ -124,6 +148,15 @@ export class HostSessionClient {
     const opened = await client.openSession(toWireOpen(input)).catch(async (error: unknown) => {
       this.client = undefined
       await client.stop()
+      // The host went away with the open in flight: that is an unreachable host, not a session the
+      // host refused, so the start failure carries the host reason instead of a bare session error.
+      const { isTransportGoneError } = await loadSenpiBarrel()
+      if (isTransportGoneError(error)) {
+        throw new HostUnavailableError("host_unreachable", {
+          fallbackAllowed: false,
+          detail: `the host went away during open_session: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
       throw toOpenFailure(error, input.sessionPath)
     })
     this.identity = identity
@@ -226,7 +259,7 @@ export class HostSessionClient {
       case "session_parked": {
         const sessionId = this.routingId ?? control.sessionId
         this.routingId = undefined
-        for (const listener of this.parkedListeners) listener({ sessionId, sessionPath: control.sessionPath })
+        for (const listener of this.parkedListeners) listener({ sessionId, sessionPath: control.sessionPath, reason: SESSION_PARKED_CAUSE })
         return
       }
       case "session_closed": {

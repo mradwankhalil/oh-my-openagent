@@ -6,7 +6,7 @@ use senpi_desktop_core::error::{CoreResult, ErrorCode};
 use senpi_desktop_core::keys::parse_keys;
 use senpi_desktop_core::protocol_params::{
     AxClickParams, AxPerformParams, AxRefParams, AxSetValueParams, DragParams, KeyChordParams, PointParams,
-    RaiseWindowParams, ScrollParams, TypeTextParams,
+    ClipboardText, RaiseWindowParams, ScrollParams, TypeTextParams,
 };
 use senpi_desktop_core::types::{DesktopPoint, Target};
 use senpi_desktop_safety::{MutatingAction, StopPathId, StopSource};
@@ -98,15 +98,14 @@ fn suspension_observed_midflight_releases_all() {
     assert!(released(&harness), "{:?}", harness.sink.ops());
 }
 
-/// A valid request for `action` against the fixture, or `None` when the
-/// session has no op for it yet.
-fn request_for(harness: &mut Harness, action: MutatingAction) -> Option<Op> {
+/// A valid request for `action` against the fixture.
+fn request_for(harness: &mut Harness, action: MutatingAction) -> Op {
     let frame = harness.capture("101");
     let frame_id = Some(frame.clone());
     let reference = harness.focused_ref();
     let target = "101".to_owned();
     let point = |x, y| DesktopPoint { x, y };
-    let op = match action {
+    match action {
         MutatingAction::Click => click_window(&frame, None),
         MutatingAction::MoveMouse => Op::MoveMouse(PointParams {
             target,
@@ -154,11 +153,10 @@ fn request_for(harness: &mut Harness, action: MutatingAction) -> Option<Op> {
             ref_: reference,
             opts: None,
         }),
-        // No session op yet: `clipboard.write` arrives with the backends'
-        // clipboard support and must route through `mutate` then.
-        MutatingAction::ClipboardWrite => return None,
-    };
-    Some(op)
+        MutatingAction::ClipboardWrite => Op::ClipboardWrite(ClipboardText {
+            text: "hello".to_owned(),
+        }),
+    }
 }
 
 #[test]
@@ -166,9 +164,7 @@ fn every_mutating_request_emits_one_audit_event() {
     for action in MutatingAction::ALL {
         // Given
         let mut harness = harness(&json!({}));
-        let Some(op) = request_for(&mut harness, action) else {
-            continue;
-        };
+        let op = request_for(&mut harness, action);
         // When
         let reply = harness.process(op);
         // Then

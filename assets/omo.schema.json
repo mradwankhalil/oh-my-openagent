@@ -915,6 +915,15 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
         },
+        "host_shard_prewarm": {
+          "default": "first-turn",
+          "type": "string",
+          "enum": [
+            "off",
+            "first-turn",
+            "session-start"
+          ]
+        },
         "default_concurrency": {
           "default": 5,
           "type": "integer",
@@ -1145,6 +1154,7 @@
         "default_execution_mode",
         "process_runner",
         "host_engine_policy",
+        "host_shard_prewarm",
         "default_concurrency",
         "global_concurrency",
         "max_depth",
@@ -2235,7 +2245,8 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
         },
         "display": {
           "type": "string",
@@ -2306,7 +2317,8 @@
           "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
     },
     "disabled_skills": {
       "type": "array",
@@ -13092,6 +13104,14 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "host_shard_prewarm": {
+              "type": "string",
+              "enum": [
+                "off",
+                "first-turn",
+                "session-start"
+              ]
+            },
             "default_concurrency": {
               "type": "integer",
               "minimum": 0,
@@ -14145,7 +14165,8 @@
           "type": "object",
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
             },
             "display": {
               "type": "string",
@@ -14216,7 +14237,8 @@
               "type": "boolean"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
         },
         "disabled_skills": {
           "type": "array",
@@ -15101,6 +15123,14 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "host_shard_prewarm": {
+              "type": "string",
+              "enum": [
+                "off",
+                "first-turn",
+                "session-start"
+              ]
+            },
             "default_concurrency": {
               "type": "integer",
               "minimum": 0,
@@ -16154,7 +16184,8 @@
           "type": "object",
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
             },
             "display": {
               "type": "string",
@@ -16225,7 +16256,8 @@
               "type": "boolean"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
         },
         "disabled_skills": {
           "type": "array",
@@ -17110,6 +17142,14 @@
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             },
+            "host_shard_prewarm": {
+              "type": "string",
+              "enum": [
+                "off",
+                "first-turn",
+                "session-start"
+              ]
+            },
             "default_concurrency": {
               "type": "integer",
               "minimum": 0,
@@ -18163,7 +18203,8 @@
           "type": "object",
           "properties": {
             "enabled": {
-              "type": "boolean"
+              "type": "boolean",
+              "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
             },
             "display": {
               "type": "string",
@@ -18234,7 +18275,8 @@
               "type": "boolean"
             }
           },
-          "additionalProperties": false
+          "additionalProperties": false,
+          "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
         },
         "disabled_skills": {
           "type": "array",
@@ -19124,6 +19166,14 @@
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991
+              },
+              "host_shard_prewarm": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "first-turn",
+                  "session-start"
+                ]
               },
               "default_concurrency": {
                 "type": "integer",
@@ -20178,7 +20228,8 @@
             "type": "object",
             "properties": {
               "enabled": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
               },
               "display": {
                 "type": "string",
@@ -20249,7 +20300,8 @@
                 "type": "boolean"
               }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
           },
           "disabled_skills": {
             "type": "array",
@@ -31035,6 +31087,14 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "host_shard_prewarm": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "first-turn",
+                      "session-start"
+                    ]
+                  },
                   "default_concurrency": {
                     "type": "integer",
                     "minimum": 0,
@@ -32088,7 +32148,8 @@
                 "type": "object",
                 "properties": {
                   "enabled": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
                   },
                   "display": {
                     "type": "string",
@@ -32159,7 +32220,8 @@
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
               },
               "disabled_skills": {
                 "type": "array",
@@ -33044,6 +33106,14 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "host_shard_prewarm": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "first-turn",
+                      "session-start"
+                    ]
+                  },
                   "default_concurrency": {
                     "type": "integer",
                     "minimum": 0,
@@ -34097,7 +34167,8 @@
                 "type": "object",
                 "properties": {
                   "enabled": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
                   },
                   "display": {
                     "type": "string",
@@ -34168,7 +34239,8 @@
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
               },
               "disabled_skills": {
                 "type": "array",
@@ -35053,6 +35125,14 @@
                     "exclusiveMinimum": 0,
                     "maximum": 9007199254740991
                   },
+                  "host_shard_prewarm": {
+                    "type": "string",
+                    "enum": [
+                      "off",
+                      "first-turn",
+                      "session-start"
+                    ]
+                  },
                   "default_concurrency": {
                     "type": "integer",
                     "minimum": 0,
@@ -36106,7 +36186,8 @@
                 "type": "object",
                 "properties": {
                   "enabled": {
-                    "type": "boolean"
+                    "type": "boolean",
+                    "description": "Experimental: register the computer tool in OmO Native sessions (default: on where the host is supported; false leaves it unregistered)"
                   },
                   "display": {
                     "type": "string",
@@ -36177,7 +36258,8 @@
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Experimental computer use in OmO Native: screenshots, windows, accessibility trees and native mouse and keyboard input. Every key is optional; defaults depend on the host."
               },
               "disabled_skills": {
                 "type": "array",

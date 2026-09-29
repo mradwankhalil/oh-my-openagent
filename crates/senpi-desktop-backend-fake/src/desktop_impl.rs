@@ -121,6 +121,21 @@ impl Backend for FakeBackend {
         Ok(())
     }
 
+    fn clipboard_read(&mut self) -> CoreResult<String> {
+        self.begin(FakeMethod::ClipboardRead)?;
+        Ok(self.clipboard.clone())
+    }
+
+    fn clipboard_write(&mut self, text: &str) -> CoreResult<()> {
+        self.begin(FakeMethod::ClipboardWrite)?;
+        self.clipboard.clear();
+        self.clipboard.push_str(text);
+        self.record(SinkOp::ClipboardWrite {
+            text: text.to_owned(),
+        });
+        Ok(())
+    }
+
     fn type_text_interruptible(
         &mut self,
         target: &Target,

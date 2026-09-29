@@ -80,6 +80,22 @@ describe("runtimeFallbackCandidates", () => {
 
     expect(candidates).toEqual({ remaining: [ZAI_GLM], skipped: [GO_M27] })
   })
+
+  test.each([
+    ["a Claude session limit", "You've hit your session limit \u00b7 resets 3pm (Asia/Seoul)"],
+    ["an OpenCode Go monthly limit", "429 Monthly usage limit reached. It will reset in 2 days 8 hours"],
+    ["a Codex usage limit", '429 {"type":"usage_limit_reached","message":"The usage limit has been reached"}'],
+  ])("#given %s on the first rung #when the candidates are computed #then other providers come first and the spent provider's rungs stay as the last resort", (_label, message) => {
+    const candidates = runtimeFallbackCandidates(record(GO_M3, [GO_M27, ZAI_GLM]), message)
+
+    expect(candidates).toEqual({ remaining: [ZAI_GLM, GO_M27], skipped: [], limit: "account" })
+  })
+
+  test("#given a limit that names one model #when the candidates are computed #then the sibling model on the same provider is next", () => {
+    const candidates = runtimeFallbackCandidates(record(GO_M3, [GO_M27, ZAI_GLM]), "You've hit your Fable weekly limit \u00b7 resets Oct 2, 9am")
+
+    expect(candidates).toEqual({ remaining: [GO_M27, ZAI_GLM], skipped: [], limit: "model" })
+  })
 })
 
 describe("terminalFailureMessage", () => {

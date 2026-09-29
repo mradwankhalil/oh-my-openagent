@@ -16,12 +16,20 @@ const REASON_MESSAGES: Readonly<Partial<Record<TaskStartFailureReason, string>>>
   catalog_probe_timed_out:
     "The task child could not confirm this model in time: its model catalog probe timed out.",
   catalog_probe_failed: "The task child cannot serve this model: its model catalog probe failed.",
-  host_unreachable: "The shared task host is unreachable (host_unreachable).",
-  ensure_failed: "The shared task host could not be ensured (ensure_failed).",
+  host_unreachable: "The task host is unreachable (host_unreachable).",
+  ensure_failed: "The task host could not be ensured (ensure_failed).",
   ensure_timed_out:
-    "The shared task host did not become ready before the ensure deadline (ensure_timed_out).",
+    "The task host did not become ready before the ensure deadline (ensure_timed_out).",
+  shard_socket_too_long:
+    "The shard socket path exceeds the platform limit (shard_socket_too_long).",
+  shard_alt_root_unsafe:
+    "The alternate shard root is unsafe (shard_alt_root_unsafe).",
+  store_index_unavailable:
+    "The task store index could not be recorded, so no host was opened (store_index_unavailable).",
+  host_incompatible:
+    "The recorded task host is incompatible; the child was not opened anywhere else (host_incompatible).",
   open_timed_out:
-    "The shared host did not finish opening the child session in time (open_timed_out).",
+    "The task host did not finish opening the child session in time (open_timed_out).",
 }
 
 const SESSION_REFUSAL_REASONS = new Set<TaskStartFailureReason>(SESSION_START_FAILURE_REASONS)
@@ -75,12 +83,12 @@ function publicMessage(
       return MODEL_UNAVAILABLE_MESSAGE
     case "session_unavailable":
       return reason !== undefined && SESSION_REFUSAL_REASONS.has(reason)
-        ? `The shared host refused the child session (${reason}).`
-        : "The shared host could not open the child session."
+        ? `The task host refused the child session (${reason}).`
+        : "The task host could not open the child session."
     case "host_unavailable":
       return reason !== undefined && HOST_UNAVAILABLE_REASONS.has(reason)
-        ? `The shared task host is unavailable (${reason}).`
-        : "The shared task host is unavailable."
+        ? `The task host is unavailable (${reason}).`
+        : "The task host is unavailable."
     case "child-turn-failed":
       return GENERIC_START_FAILURE_MESSAGE
     default:

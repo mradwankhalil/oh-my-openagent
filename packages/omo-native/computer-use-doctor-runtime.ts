@@ -2,7 +2,6 @@ import { accessSync, constants, existsSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { loadOmoConfig, type OmoConfigEnv } from "@oh-my-opencode/omo-config-core"
 import {
-  acquireDesktopEngine,
   getDesktopEngineHost,
   isQuarantinedFile,
   locateDesktopEngine,
@@ -47,6 +46,11 @@ export type ComputerUseDoctorReport =
         readonly cause: string
         readonly attemptedPaths: readonly string[]
       }
+    })
+  | (ComputerUseDoctorBase & {
+      /** No engine is installed yet and none is configured; it is downloaded on first use. */
+      readonly kind: "not-installed"
+      readonly attemptedPaths: readonly string[]
     })
   | (ComputerUseDoctorBase & {
       readonly kind: "failed"
@@ -112,10 +116,17 @@ function explicitPathDiagnostic(
   }
 }
 
-async function resolveEnginePath(
+/**
+ * Where the engine is, if it is installed. Doctor never installs it: a user who has not started computer use yet
+ * has no engine, which is the normal state, and the engine is downloaded the first time computer use starts.
+ */
+function resolveEnginePath(
   input: ComputerUseDoctorInput,
   enginePath: string | undefined,
-): Promise<{ readonly path: string } | { readonly diagnostic: DesktopEngineLocateDiagnostic }> {
+):
+  | { readonly path: string }
+  | { readonly diagnostic: DesktopEngineLocateDiagnostic }
+  | { readonly notInstalled: readonly string[] } {
   const platform = input.platform ?? process.platform
   const arch = input.arch ?? process.arch
   const host = getDesktopEngineHost(platform, arch)
@@ -135,20 +146,7 @@ async function resolveEnginePath(
   const located = locateDesktopEngine(locatorOptions)
   if (located.path !== null) return { path: located.path }
   if (located.diagnostic.code === "quarantined") return { diagnostic: located.diagnostic }
-
-  const timeoutMs = input.timeoutMs ?? COMPUTER_USE_DOCTOR_TIMEOUT_MS
-  const boundedFetch = Object.assign(
-    (request: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
-      fetch(request, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
-    { preconnect: fetch.preconnect },
-  )
-  const acquired = await acquireDesktopEngine({
-    version: input.version,
-    host,
-    fetch: boundedFetch,
-    locatorOptions,
-  })
-  return acquired.path === null ? { diagnostic: acquired.diagnostic } : { path: acquired.path }
+  return { notInstalled: located.diagnostic.attemptedPaths }
 }
 
 export async function computerUseDoctorReport(input: ComputerUseDoctorInput): Promise<ComputerUseDoctorReport> {
@@ -162,7 +160,8 @@ export async function computerUseDoctorReport(input: ComputerUseDoctorInput): Pr
   if (!supported) return { ...base, kind: "skipped", reason: "unsupported" }
   if (!settings.enabled) return { ...base, kind: "skipped", reason: "disabled" }
 
-  const resolved = await resolveEnginePath(input, settings.enginePath)
+  const resolved = resolveEnginePath(input, settings.enginePath)
+  if ("notInstalled" in resolved) return { ...base, kind: "not-installed", attemptedPaths: resolved.notInstalled }
   if ("diagnostic" in resolved) return unavailable(base, resolved.diagnostic)
   const probed = await probeComputerUseEngine(
     resolved.path,

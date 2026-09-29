@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url"
 
 import { createSandbox, seedSandbox } from "./drive.mjs"
 import { isolatedChildEnv } from "./sandbox-child-env.mjs"
+import { AGENT_DIR_ENV_NAMES } from "./task-host-e2e-sandbox.mjs"
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 export const PACKAGE_ROOT = resolve(scriptDir, "..", "..")
@@ -172,12 +173,14 @@ export function sandboxEnv(sandbox) {
   }
 }
 
+// Every agent-dir lane points at the sandbox: `isolatedChildEnv` sets all three (#8967), and the omo
+// lane outranks the senpi one, so a lane that is merely absent-or-real would be a leak, not a scrub.
 export function assertSandboxEnv(sandbox, env) {
-  for (const [name, expected] of [["SENPI_CODING_AGENT_DIR", sandbox.agentDir], ["OMO_MEMORY_HOME", sandbox.memoryHome], ["HOME", sandbox.homeDir]]) {
+  for (const [name, expected] of [...AGENT_DIR_ENV_NAMES.map((lane) => [lane, sandbox.agentDir]), ["OMO_MEMORY_HOME", sandbox.memoryHome], ["HOME", sandbox.homeDir]]) {
     if (env[name] !== expected) throw new Error(`env ${name} is ${env[name]}, expected the sandbox path ${expected}`)
     if (!env[name].startsWith(sandbox.root)) throw new Error(`env ${name} escapes the sandbox root ${sandbox.root}`)
   }
-  for (const name of ["OMO_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR", "SENPI_BIN", "SENPI_PACKAGE_DIR", "OMO_PACKAGE_DIR", "PI_PACKAGE_DIR"]) {
+  for (const name of ["SENPI_BIN", "SENPI_PACKAGE_DIR", "OMO_PACKAGE_DIR", "PI_PACKAGE_DIR"]) {
     if (env[name] !== undefined) throw new Error(`env ${name} must be scrubbed before spawning`)
   }
   if (env.PI_OFFLINE !== "1") throw new Error("env PI_OFFLINE must be 1: the lane allows no network beyond the mock provider")

@@ -27,6 +27,7 @@ export type {
   ResolvedModelSource,
   RunnerKind,
   SpawnSpecV1,
+  StartQueued,
   SuspensionReason,
   TaskNotification,
   TaskRecord,

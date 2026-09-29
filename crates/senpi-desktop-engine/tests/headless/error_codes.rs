@@ -27,10 +27,9 @@ fn declared_codes() -> Vec<String> {
         .collect()
 }
 
-/// Every pointer, keyboard, window, and AX input method with parseable params.
-/// `clipboard.write` is absent: the engine answers it `Internal` until the
-/// clipboard lands with the backends.
-pub fn input_calls() -> [(&'static str, Value); 11] {
+/// Every mutating method (pointer, keyboard, window, AX, clipboard write)
+/// with parseable params.
+pub fn input_calls() -> [(&'static str, Value); 12] {
     let at = json!({"target": "desktop", "x": 10.0, "y": 10.0});
     [
         ("click", at.clone()),
@@ -50,6 +49,7 @@ pub fn input_calls() -> [(&'static str, Value); 11] {
         ("ax.setValue", json!({"ref": "e1", "value": "hi"})),
         ("ax.focus", json!({"ref": "e1"})),
         ("ax.click", json!({"ref": "e1"})),
+        ("clipboard.write", json!({"text": "hi"})),
     ]
 }
 

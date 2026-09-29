@@ -26,8 +26,8 @@ function spawnCommentChecker(args: readonly string[]): SpawnProcess {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   })
-  const exited = new Promise<number>((resolve) => {
-    subprocess.on("error", () => resolve(1))
+  const exited = new Promise<number>((resolve, reject) => {
+    subprocess.on("error", reject)
     subprocess.on("close", (code) => resolve(code ?? 1))
   })
   return {

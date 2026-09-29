@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,9 +24,14 @@ export type DesktopEngineLocation =
 /** Reports whether a candidate carries macOS `com.apple.quarantine`; injectable for tests. */
 export type DesktopEngineQuarantineProbe = (enginePath: string) => boolean;
 
+/** The C library a Linux engine binary links against; other platforms ship one engine per architecture. */
+export type DesktopEngineLibc = "glibc" | "musl";
+
 export interface DesktopEngineLocatorOptions {
 	readonly platform?: string;
 	readonly arch?: string;
+	/** Defaults to the running process's libc when `platform` is this Linux process's platform. */
+	readonly libc?: DesktopEngineLibc;
 	/** Overrides the OMO_PACKAGE_DIR extracted payload root (empty string disables it). */
 	readonly runtimeDir?: string;
 	/** Directory of the running executable; a compiled senpi ships the engine as a sidecar beside it. */
@@ -40,8 +45,45 @@ export interface DesktopEngineLocatorOptions {
 
 const defaultPackageDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-export function getDesktopEngineHost(platform: string = process.platform, arch: string = process.arch): string {
-	return `${platform}-${arch}`;
+/**
+ * `<platform>-<arch>`, plus `-musl` for a musl Linux host: the glibc engine cannot execute there.
+ * The libc defaults to the running process's only when `platform` is the platform it runs on.
+ */
+export function getDesktopEngineHost(
+	platform: string = process.platform,
+	arch: string = process.arch,
+	libc: DesktopEngineLibc | undefined = platform === "linux" && platform === process.platform ? runningLibc() : undefined,
+): string {
+	return platform === "linux" && libc === "musl" ? `${platform}-${arch}-musl` : `${platform}-${arch}`;
+}
+
+let detectedLibc: DesktopEngineLibc | undefined;
+
+function runningLibc(): DesktopEngineLibc {
+	detectedLibc ??= libcFromSignals(process.report?.getReport(), readProcessMaps);
+	return detectedLibc;
+}
+
+/**
+ * The libc of the running process, never of what is installed (a glibc host with musl-tools still
+ * runs glibc). Glibc builds of Bun and Node report `header.glibcVersionRuntime`; musl builds omit it.
+ * Absence alone does not prove musl, so musl also needs its loader mapped into this process; without
+ * that evidence the host stays glibc, the name it had before libc was part of it.
+ */
+export function libcFromSignals(report: unknown, readMaps: () => string | undefined): DesktopEngineLibc {
+	const header: unknown = typeof report === "object" && report !== null ? Reflect.get(report, "header") : undefined;
+	const glibc: unknown = typeof header === "object" && header !== null ? Reflect.get(header, "glibcVersionRuntime") : undefined;
+	if (typeof glibc === "string" && glibc.length > 0) return "glibc";
+	return /\/ld-musl-[^/\s]+\.so\.1$/m.test(readMaps() ?? "") ? "musl" : "glibc";
+}
+
+function readProcessMaps(): string | undefined {
+	try {
+		return readFileSync("/proc/self/maps", "utf8");
+	} catch (error) {
+		if (error instanceof Error && "code" in error) return undefined;
+		throw error;
+	}
 }
 
 export function getDesktopEngineFileName(platform: string = process.platform): string {
@@ -50,7 +92,7 @@ export function getDesktopEngineFileName(platform: string = process.platform): s
 
 /** OMO_PACKAGE_DIR (or its explicit override) precedes the sidecar, prebuild and dev build. */
 export function getDesktopEngineCandidatePaths(options: DesktopEngineLocatorOptions = {}): readonly string[] {
-	const host = getDesktopEngineHost(options.platform, options.arch);
+	const host = getDesktopEngineHost(options.platform, options.arch, options.libc);
 	const file = getDesktopEngineFileName(options.platform);
 	const packageDir = options.packageDir ?? defaultPackageDir;
 	const execDir = options.execDir ?? dirname(process.execPath);
@@ -67,7 +109,7 @@ export function getDesktopEngineCandidatePaths(options: DesktopEngineLocatorOpti
 
 export function locateDesktopEngine(options: DesktopEngineLocatorOptions = {}): DesktopEngineLocation {
 	const platform = options.platform ?? process.platform;
-	const host = getDesktopEngineHost(platform, options.arch);
+	const host = getDesktopEngineHost(platform, options.arch, options.libc);
 	const attemptedPaths = getDesktopEngineCandidatePaths(options);
 	const isQuarantined = options.isQuarantined ?? ((enginePath: string) => isQuarantinedFile(enginePath, platform));
 	const causes: string[] = [];

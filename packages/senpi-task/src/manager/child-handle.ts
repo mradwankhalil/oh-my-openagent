@@ -2,6 +2,8 @@ import type { ChildHandle as InProcessChildHandle, RunnerOutcome } from "../runn
 import { mapExitOutcomeToError } from "../runners/rpc/exit-mapping"
 import type { HostSessionChildHandle } from "../runners/rpc-host/handle-port"
 import type { RpcChildHandle, RpcEntriesResult, RpcSpawnSpec, RpcSwitchSessionResult } from "../runners/types"
+import type { SuspensionReason } from "../state"
+import { HOST_TURN_RESUMED_EVENT } from "./host-turn-resumed"
 
 export type { RunnerOutcome } from "../runners/in-process/child-handle"
 
@@ -41,11 +43,17 @@ export type ManagedChildHandle = {
     readonly instanceId: string
   }
   readonly spawnSpec?: RpcSpawnSpec
+  // A daemon-session child whose session parked - itself (its recorded endpoint refused a reattach) or
+  // by its host (idle sweep, generation handoff): the record parks with that reason either way.
+  onParked?(listener: (event: { readonly reason: SuspensionReason }) => void): () => void
   steer(text: string): Promise<void>
   followUp(text: string): Promise<void>
   abort(): Promise<void>
   subscribe(listener: ManagedChildListener): () => void
   waitForOutcome(): Promise<RunnerOutcome>
+  // Present on process children: fires when the child starts a run on its own after its turn
+  // settled (a monitor or background job woke it), so the manager can reopen the record.
+  onSelfResumed?(listener: () => void): () => void
   // RPC handles expose a settled process signal; in-process handles omit it because their session
   // lifecycle has no separate child process to observe.
   hasExited?(): boolean
@@ -91,10 +99,12 @@ export function adaptRpcHandle(handle: RpcChildHandle): ManagedChildHandle {
       return handle.pid
     },
     ...(handle.spawnSpec === undefined ? {} : { spawnSpec: handle.spawnSpec }),
+    ...(isHostSessionHandle(handle) ? { onParked: (listener) => handle.onParked(listener) } : {}),
     steer: (text) => handle.steer(text),
     followUp: (text) => handle.followUp(text),
     abort: () => handle.abort(),
-    subscribe: (listener) => handle.subscribe(listener),
+    subscribe: (listener) => subscribeManagedRpc(handle, listener),
+    ...(handle.onSelfResumed === undefined ? {} : { onSelfResumed: (listener: () => void) => handle.onSelfResumed?.(listener) ?? (() => undefined) }),
     waitForOutcome: () => handle.waitForOutcome === undefined ? rpcOutcome(handle) : handle.waitForOutcome(),
     hasExited: () => handle.hasExited?.() ?? handle.exitOutcome() !== undefined,
     ...(switchSession === undefined ? {} : { switchSession: (sessionPath: string) => switchSession(sessionPath) }),
@@ -102,6 +112,17 @@ export function adaptRpcHandle(handle: RpcChildHandle): ManagedChildHandle {
     lastAssistantText: () => handle.lastAssistantText(),
     terminate: () => handle.terminate(),
     dispose: () => handle.dispose(),
+  }
+}
+
+/** The child's events, plus - for a daemon session - the turn a reattach left running on the new port. */
+function subscribeManagedRpc(handle: RpcChildHandle, listener: ManagedChildListener): () => void {
+  const events = handle.subscribe(listener)
+  if (!isHostSessionHandle(handle)) return events
+  const resumed = handle.onTurnResumed(() => listener({ type: HOST_TURN_RESUMED_EVENT }))
+  return () => {
+    events()
+    resumed()
   }
 }
 
@@ -153,12 +174,40 @@ async function rpcOutcome(handle: RpcChildHandle): Promise<RunnerOutcome> {
   }
 }
 
+/**
+ * The same child, reporting `onReleased` only once a teardown of it succeeds: a rejected dispose
+ * leaves it owned, so the next teardown attempt retries it.
+ */
+export function releaseOnDispose(handle: ManagedChildHandle, onReleased: (owner: ManagedChildHandle) => void): ManagedChildHandle {
+  const owner: ManagedChildHandle = new Proxy(handle, {
+    get: (target, property) => {
+      if (property === "dispose") {
+        return async (): Promise<void> => {
+          await target.dispose()
+          onReleased(owner)
+        }
+      }
+      const value: unknown = Reflect.get(target, property, target)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+  return owner
+}
+
 export async function discardManagedHandle(handle: ManagedChildHandle): Promise<void> {
   try {
     if (handle.terminate !== undefined) await handle.terminate()
   } finally {
     await handle.dispose()
   }
+}
+
+/**
+ * Let go of a handle whose child now belongs to another owner: drop this process's connection and
+ * never end the child. For a daemon session that is a detach; `discardManagedHandle` would close it.
+ */
+export async function releaseSupersededHandle(handle: ManagedChildHandle): Promise<void> {
+  await handle.dispose()
 }
 
 export async function discardRpcHandle(handle: RpcChildHandle): Promise<void> {

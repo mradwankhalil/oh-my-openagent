@@ -25,6 +25,9 @@ pub struct FakeScenario {
     pub capabilities: DesktopCapabilities,
     /// Accessibility tree root per window id.
     pub ax: BTreeMap<String, FakeAxNode>,
+    /// Reports every AX element's owner as unknown, like a backend that
+    /// cannot map an element to its native window.
+    pub ax_owner_unknown: bool,
     /// Global cursor position; `None` models a backend without cursor access.
     pub cursor: Option<DesktopPoint>,
     /// RGBA fill of every captured image.
@@ -42,6 +45,7 @@ impl Default for FakeScenario {
             windows: Vec::new(),
             capabilities: fake_capabilities(0),
             ax: BTreeMap::new(),
+            ax_owner_unknown: false,
             cursor: default_cursor(),
             capture_color: DEFAULT_CAPTURE_COLOR,
             delay_ms: DelayMs::default(),
@@ -185,6 +189,8 @@ struct RawScenario {
     capabilities: Map<String, Value>,
     #[serde(default)]
     ax: BTreeMap<String, FakeAxNode>,
+    #[serde(default)]
+    ax_owner_unknown: bool,
     #[serde(default = "default_cursor")]
     cursor: Option<DesktopPoint>,
     #[serde(default = "default_capture_color")]
@@ -216,6 +222,7 @@ impl TryFrom<RawScenario> for FakeScenario {
             windows: raw.windows,
             capabilities,
             ax: raw.ax,
+            ax_owner_unknown: raw.ax_owner_unknown,
             cursor: raw.cursor,
             capture_color: raw.capture_color,
             delay_ms: raw.delay_ms,

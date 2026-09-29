@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -12,6 +12,7 @@ import {
   releaseLock,
   withLock,
 } from "./index"
+import { removeTree } from "../../../../test-support/remove-tree"
 
 const temporaryDirectories: string[] = []
 
@@ -40,7 +41,7 @@ async function captureError(promise: Promise<unknown>): Promise<unknown> {
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(async (directory) => {
-    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    await removeTree(directory, { maxRetries: 10, retryDelay: 200 })
   }))
 })
 

@@ -245,6 +245,34 @@ describe("builtin chain routing", () => {
     })
   })
 
+  it("never serves a builtin lane from a gateway's copy of its models (#9146)", () => {
+    for (const active of ["daily-normal", "daily-heavy", "geeky-normal", "geeky-heavy"]) {
+      const result = resolveModelProfile({
+        active,
+        availableModels: [
+          "openrouter/anthropic/claude-opus-5.5",
+          "opengateway/anthropic/claude-fable-5-1",
+          "openrouter/moonshotai/kimi-k3",
+          "openrouter/openai/gpt-6-astra",
+          "openrouter/openai/gpt-5.6-sol",
+          "office-gateway/gpt-5.6-sol",
+        ],
+      })
+
+      expect(result.kind, active).toBe("unavailable")
+    }
+  })
+
+  it("lets a user's bare model id, which names no provider, match a gateway", () => {
+    const result = resolveModelProfile({
+      profiles: { mine: { models: ["gpt-5.6-sol"] } },
+      active: "mine",
+      availableModels: ["office-gateway/gpt-5.6-sol"],
+    })
+
+    expect(result).toMatchObject({ kind: "resolved", provider: "office-gateway", modelId: "gpt-5.6-sol" })
+  })
+
   it("keeps the ChatGPT subscription ahead of the openai API lane for geeky-heavy astra", () => {
     const result = resolveModelProfile({
       active: "geeky-heavy",

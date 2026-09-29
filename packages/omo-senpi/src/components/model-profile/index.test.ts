@@ -198,12 +198,22 @@ describe("createModelProfileComponent", () => {
     expect(pi.sessionThinkingLevels).toEqual(["medium"])
   })
 
-  test("#given daily-normal and Opus only through a gateway #when the session starts #then the lane keeps its cross-provider fallback", async () => {
+  test("#given daily-normal and Opus only through a gateway #when the session starts #then the lane skips the gateway for its next listed rung", async () => {
     const { pi, start } = harness({ model_profile: "daily-normal" }, [GATEWAY_OPUS, CODING_KIMI])
 
     await start(STARTUP)
 
-    expect(pi.sessionModels).toEqual([GATEWAY_OPUS])
+    expect(pi.sessionModels).toEqual([CODING_KIMI])
+  })
+
+  test("#given daily-normal and only a gateway serving its models #when the session starts #then the session model is kept with one unavailable notice", async () => {
+    const { pi, start } = harness({ model_profile: "daily-normal" }, [GATEWAY_OPUS])
+
+    await start(STARTUP)
+
+    expect(pi.sessionModels).toEqual([])
+    expect(pi.messages).toHaveLength(1)
+    expect(pi.messages[0]?.message).toMatchObject({ customType: MODEL_PROFILE_UNAVAILABLE_TYPE, display: true })
   })
 
   test("#given daily-normal with only the third rung #when the session starts #then kimi max is applied and skipped rungs are named", async () => {

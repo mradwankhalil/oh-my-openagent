@@ -11,19 +11,20 @@ mod psn;
 mod spi;
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use core_graphics::event::CGEvent;
 use core_graphics::geometry::CGPoint;
 use foreign_types::ForeignType;
-use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use senpi_desktop_core::error::{CoreResult, DesktopError};
 
 use self::psn::{
     front_process, post_focus_record, process_psn, FocusMarker, ProcessSerialNumber,
     SET_FRONT_NO_WINDOWS,
 };
-pub(crate) use self::spi::is_available;
+pub(crate) use self::spi::{front_pid, is_available};
 use self::spi::required;
 
 /// Ensures the required background SPI resolved; the error names the missing
@@ -74,6 +75,16 @@ pub(crate) fn stamp_event(
         (spi.set_integer)(ptr, 92, i64::from(wid));
         (spi.set_window_location)(ptr, window_local);
     }
+    Ok(())
+}
+
+/// Posts a pointer event through SkyLight alone: the route for events that
+/// carry a delta, which the public queue would deliver a second time.
+pub(crate) fn post_routed(pid: libc::pid_t, event: &CGEvent) -> CoreResult<()> {
+    let spi = required()?;
+    // SAFETY: `event` remains retained for the synchronous post and
+    // `post_to_pid` was atomically resolved with its exact ABI.
+    unsafe { (spi.post_to_pid)(pid, event_ptr(event)) };
     Ok(())
 }
 
@@ -131,37 +142,43 @@ pub(crate) fn activate_without_raise(pid: libc::pid_t, wid: u32) -> CoreResult<(
     Ok(())
 }
 
-/// Runs `action` with `(pid, wid)`'s process in front, restoring the previous
-/// front process after it. Falls back to the public `NSRunningApplication`
-/// activation when the foreground SPI is unavailable.
+/// Runs `action` with `pid` as the active application, restoring the previous
+/// front application after it. Activation goes through AppKit: a process
+/// fronted only through SkyLight (`_SLPSSetFrontProcessWithOptions`) is front to
+/// WindowServer and AX but stays inactive in AppKit, so its windows consume the
+/// click as an activation click (#9008). The caller selects the exact window
+/// through AX (`prepare_foreground_input`); SkyLight only restores the previous
+/// front process afterwards, when its SPI resolved.
+///
+/// # Errors
+/// `InputFailed` when the application does not become active; nothing is
+/// posted then.
 pub(crate) fn with_foreground<T>(
     pid: libc::pid_t,
-    wid: u32,
     action: impl FnOnce() -> CoreResult<T>,
 ) -> CoreResult<T> {
-    let Some(spi) = spi::foreground() else {
-        return with_public_foreground(pid, action);
-    };
-    let mut previous_record = ProcessSerialNumber::default();
-    // SAFETY: `previous_record` is a writable PSN and the foreground-only
-    // function pointer passed its exact-signature probe.
-    let previous_known = unsafe { (spi.get_front)(&mut previous_record) } == 0;
-    let previous = previous_known.then_some(previous_record);
-    let Some(target) = psn_for_pid(spi.psn, pid) else {
-        return with_public_foreground(pid, action);
-    };
-    // SAFETY: Target PSN is valid and SET_FRONT_NO_WINDOWS is kCPSNoWindows,
-    // used only by this foreground delivery rung.
-    if unsafe { (spi.set_front)(&target, wid, SET_FRONT_NO_WINDOWS) } != 0 {
-        return with_public_foreground(pid, action);
-    }
+    // The live user-visible front app, not WindowServer's raw front process (an
+    // accessory panel owner, #9084) nor the engine's stale AppKit view.
+    let previous = crate::front_app::current_front_pid();
+    crate::front_app::note_engine_activation(pid);
+    activate_application(pid)?;
+    let result = await_active(pid).and_then(|()| {
+        thread::sleep(Duration::from_millis(40));
+        action()
+    });
     thread::sleep(Duration::from_millis(40));
-    let result = action();
-    thread::sleep(Duration::from_millis(40));
-    if let Some(previous) = previous {
-        // SAFETY: The saved PSN came from WindowServer; window id 0 restores
-        // that process after foreground input.
-        unsafe { (spi.set_front)(&previous, 0, SET_FRONT_NO_WINDOWS) };
+    let now_front = crate::front_app::current_front_pid();
+    let reclaim = crate::front_app::restore_step(0, now_front, Some(pid), crate::front_app::is_regular)
+        == crate::front_app::RestoreStep::Reclaim;
+    // Hand the front back only while our own activation (or an accessory panel) holds it; a regular app the
+    // user switched to during the action stays front (#9056).
+    if let Some(previous) = previous.filter(|&previous| previous != pid && reclaim) {
+        if let Some((spi, psn)) = spi::foreground().and_then(|spi| psn_for_pid(spi.psn, previous).map(|psn| (spi, psn))) {
+            // SAFETY: The PSN came from WindowServer for the live front app;
+            // window id 0 restores that process after foreground input.
+            unsafe { (spi.set_front)(&psn, 0, SET_FRONT_NO_WINDOWS) };
+        }
+        let _ = activate_application(previous);
     }
     result
 }
@@ -187,41 +204,49 @@ fn psn_for_pid(lookup: spi::PsnLookup, pid: libc::pid_t) -> Option<ProcessSerial
     process_psn(lookup, pid, 0)
 }
 
-fn with_public_foreground<T>(
-    pid: libc::pid_t,
-    action: impl FnOnce() -> CoreResult<T>,
-) -> CoreResult<T> {
-    let workspace = NSWorkspace::sharedWorkspace();
-    let previous = workspace.frontmostApplication();
+/// How long an activated application may take to report itself active.
+const ACTIVE_DEADLINE: Duration = Duration::from_millis(500);
+
+/// Activates `pid` through accessibility (`AXFrontmost`) and AppKit.
+///
+/// # Errors
+/// `InputFailed` when the process is gone or both requests are refused.
+pub(crate) fn activate_application(pid: libc::pid_t) -> CoreResult<Retained<NSRunningApplication>> {
     let target =
         NSRunningApplication::runningApplicationWithProcessIdentifier(pid).ok_or_else(|| {
             DesktopError::window_not_found(format!(
                 "application process {pid} is no longer running"
             ))
         })?;
+    // An AppKit activation request from this non-active process may be declined
+    // (cooperative activation); the accessibility `AXFrontmost` write is honored.
+    let fronted = crate::ax::make_frontmost(pid);
     #[expect(
         deprecated,
-        reason = "public foreground fallback must override another frontmost app"
+        reason = "foreground delivery must override another frontmost app"
     )]
-    let options = NSApplicationActivationOptions::ActivateAllWindows
-        | NSApplicationActivationOptions::ActivateIgnoringOtherApps;
-    if !target.activateWithOptions(options) {
+    let options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
+    if !target.activateWithOptions(options) && !fronted {
         return Err(DesktopError::input_failed(format!(
-            "public foreground activation for process {pid} was rejected"
+            "foreground activation for process {pid} was rejected"
         )));
     }
-    thread::sleep(Duration::from_millis(40));
-    let result = action();
-    thread::sleep(Duration::from_millis(40));
-    if let Some(previous) = previous {
-        #[expect(
-            deprecated,
-            reason = "restoring the prior frontmost app requires the same activation option"
-        )]
-        let restore_options = NSApplicationActivationOptions::ActivateIgnoringOtherApps;
-        let _ = previous.activateWithOptions(restore_options);
+    Ok(target)
+}
+
+fn await_active(pid: libc::pid_t) -> CoreResult<()> {
+    let started = Instant::now();
+    while crate::front_app::current_front_pid() != Some(pid) {
+        if started.elapsed() >= ACTIVE_DEADLINE {
+            return Err(DesktopError::input_failed(format!(
+                "process {pid} did not become the active application for foreground input \
+                 within {} ms; nothing was posted. Retry, or use delivery:\"background\" or ax actions",
+                ACTIVE_DEADLINE.as_millis()
+            )));
+        }
+        thread::sleep(Duration::from_millis(10));
     }
-    result
+    Ok(())
 }
 
 #[cfg(test)]

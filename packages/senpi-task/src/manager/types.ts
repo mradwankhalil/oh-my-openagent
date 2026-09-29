@@ -130,6 +130,7 @@ export type PlanResolutionError = {
   readonly category?: string
   readonly attempted_chain?: readonly DelegateFallbackEntry[]
   readonly missing_providers?: readonly string[]
+  readonly unlisted_provider_model?: string
 }
 
 export type PlanResolution =

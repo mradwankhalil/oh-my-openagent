@@ -17,7 +17,16 @@ function writeShellChecker(name: string, body: string): string {
 
 // The checker runs in its own process so an unhandled stdin 'error' event ends that process
 // (exit code 1, "Unhandled 'error' event") instead of the test runner.
-async function runCheckerRounds(binaryPath: string): Promise<{ exitCode: number; results: unknown[]; stderr: string }> {
+// Windows has no shebang scripts, so the dead checker is Bun itself: the runner spawns
+// `<binary> check`, and Bun resolves `check` to this file in the host's cwd, which exits
+// without reading stdin.
+function createWindowsDeadCheckerCwd(): string {
+  const cwd = createTempCwd()
+  writeFileSync(join(cwd, "check.js"), "process.exit(0)\n")
+  return cwd
+}
+
+async function runCheckerRounds(binaryPath: string, cwd?: string): Promise<{ exitCode: number; results: unknown[]; stderr: string }> {
   const program = `
     const { defaultRunCommentChecker } = await import(${JSON.stringify(RUNNER_URL)})
     const results = []
@@ -39,6 +48,7 @@ async function runCheckerRounds(binaryPath: string): Promise<{ exitCode: number;
     console.log(JSON.stringify(results))
   `
   const child = Bun.spawn([process.execPath, "-e", program], {
+    ...(cwd === undefined ? {} : { cwd }),
     stdout: "pipe",
     stderr: "pipe",
     signal: AbortSignal.timeout(30_000),
@@ -57,10 +67,12 @@ const EMPTY_ROUNDS = Array.from({ length: PAYLOAD_SIZES.length * ROUNDS_PER_SIZE
 describe("comment-checker child stdin (#6396)", () => {
   it("#given a checker binary that exits without reading stdin #when edits of any size are checked #then the host survives and every check is empty", async () => {
     // given
-    const binaryPath = process.platform === "win32" ? process.execPath : writeShellChecker("dead-checker", "exit 0")
+    const onWindows = process.platform === "win32"
+    const binaryPath = onWindows ? process.execPath : writeShellChecker("dead-checker", "exit 0")
+    const cwd = onWindows ? createWindowsDeadCheckerCwd() : undefined
 
     // when
-    const { exitCode, results, stderr } = await runCheckerRounds(binaryPath)
+    const { exitCode, results, stderr } = await runCheckerRounds(binaryPath, cwd)
 
     // then
     expect({ exitCode, results, stderr: stderr.includes("EPIPE") || stderr.includes("EOF") ? stderr : "" }).toEqual({

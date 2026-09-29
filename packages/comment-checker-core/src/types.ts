@@ -73,6 +73,19 @@ export interface HookInput {
 export interface CheckResult {
   readonly hasComments: boolean
   readonly message: string
+  /**
+   * Set when the checker exited outside its protocol (0 = clean, 2 = comments on stderr), e.g. a
+   * binary that cannot start. Still reported as "no comments", so callers that ignore it keep their
+   * behavior; a caller can use it to stop re-running a broken checker (#8850).
+   */
+  readonly failure?: CheckFailure
+}
+
+export interface CheckFailure {
+  /** `null` when the checker never started (a spawn error such as EACCES or ENOEXEC). */
+  readonly exitCode: number | null
+  /** The checker's stderr, or the spawn error message when it never started. */
+  readonly stderr: string
 }
 
 export type SpawnSignal = "SIGTERM" | "SIGKILL"

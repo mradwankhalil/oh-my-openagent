@@ -9,6 +9,8 @@ mod backend;
 mod capture;
 mod cursor;
 mod focus;
+mod front_app;
+mod launch_services;
 mod input;
 mod skylight;
 mod stop_path;

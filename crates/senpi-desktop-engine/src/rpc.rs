@@ -2,7 +2,6 @@
 //! objects `{code, message, data}`.
 
 use senpi_desktop_core::error::{DesktopError, ErrorCode};
-use senpi_desktop_core::methods::Method;
 use senpi_desktop_core::protocol::{
     rpc_error_code, EngineErrorData, JsonRpcVersion, MethodRejection, MethodRejectionData, RequestId,
     RpcError, RpcErrorData, RpcFailure, RpcSuccess, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
@@ -29,14 +28,6 @@ impl Failure {
             ErrorCode::Cancelled,
             "request was cancelled by $/cancel",
         ))
-    }
-
-    /// A method of the frozen table whose engine side lands in a later todo.
-    pub fn not_implemented(method: Method) -> Self {
-        Self::Engine(DesktopError::internal(format!(
-            "{} is not implemented by this engine build yet",
-            method.spec().name
-        )))
     }
 
     fn into_rpc_error(self) -> RpcError {

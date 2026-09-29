@@ -60,6 +60,12 @@ impl Backend for PanickyFake {
     fn type_text(&mut self, target: &Target, text: &str, mode: DeliveryMode) -> CoreResult<()> {
         self.inner.type_text(target, text, mode)
     }
+    fn clipboard_read(&mut self) -> CoreResult<String> {
+        self.inner.clipboard_read()
+    }
+    fn clipboard_write(&mut self, text: &str) -> CoreResult<()> {
+        self.inner.clipboard_write(text)
+    }
     fn type_text_interruptible(
         &mut self,
         target: &Target,

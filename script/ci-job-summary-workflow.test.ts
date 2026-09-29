@@ -36,6 +36,7 @@ const workflowExpectations = [
   { path: ".github/workflows/desktop-windows-qa.yml", jobs: ["windows-desktop-qa"] },
   { path: ".github/workflows/bot-merge.yml", jobs: ["merge"] },
   { path: ".github/workflows/lint-workflows.yml", jobs: ["actionlint"] },
+  { path: ".github/workflows/macos-signing-canary.yml", jobs: ["canary"] },
   { path: ".github/workflows/npm-dist-tag-rollback.yml", jobs: ["retag"] },
   { path: ".github/workflows/package-labels.yml", jobs: ["ensure-labels", "label-pull-request", "label-issue"] },
   { path: ".github/workflows/publish-platform.yml", jobs: ["desktop-engine", "build", "publish", "smoke-linux-arm64"] },
@@ -63,6 +64,9 @@ const workflowExpectations = [
   { path: ".github/workflows/web-ci.yml", jobs: ["format-lint-typecheck-build"] },
   { path: ".github/workflows/isolation-linux-fs.yml", jobs: ["linux-fs"] },
   { path: ".github/workflows/web-deploy.yml", jobs: ["deploy"] },
+  { path: ".github/workflows/get-worker-ci.yml", jobs: ["worker", "install-unix", "install-alpine", "install-windows"] },
+  { path: ".github/workflows/get-worker-deploy.yml", jobs: ["deploy"] },
+  { path: ".github/workflows/installer-mirror.yml", jobs: ["mirror"] },
   { path: ".github/workflows/windows-flake-soak.yml", jobs: ["soak"] },
 ] as const satisfies readonly WorkflowExpectation[]
 

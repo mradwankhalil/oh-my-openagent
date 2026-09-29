@@ -23,10 +23,12 @@ pub struct FakeBackend {
     pub(crate) windows: Vec<DesktopWindow>,
     pub(crate) capabilities: DesktopCapabilities,
     pub(crate) cursor: Option<DesktopPoint>,
+    pub(crate) clipboard: String,
     pub(crate) capture_color: Rgba<u8>,
     delays: DelayMs,
     pub(crate) resize_window: Option<ResizeWindow>,
     pub(crate) ax_tree: AxTree,
+    pub(crate) ax_owner_unknown: bool,
     pub(crate) sink: RecordingSink,
     faults: Faults,
 }
@@ -39,10 +41,12 @@ impl FakeBackend {
         }
         Self {
             ax_tree: AxTree::build(&scenario.ax),
+            ax_owner_unknown: scenario.ax_owner_unknown,
             displays: scenario.displays,
             windows: scenario.windows,
             capabilities: scenario.capabilities,
             cursor: scenario.cursor,
+            clipboard: String::new(),
             capture_color: Rgba(scenario.capture_color),
             delays: scenario.delay_ms,
             resize_window: scenario.resize_window,

@@ -210,6 +210,20 @@ export function engineHostCall(engineArgs, options) {
   return { exitCode: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
 }
 
+export function rollbackMigrateCall(request) {
+  const runtime = join(packageRoot, "plugin", "runtime", "rollback-migrate.js")
+  const result = spawnSync(process.execPath, [runtime], {
+    encoding: "utf8",
+    input: JSON.stringify(request),
+    env: senpiEnvironment(preparedSenpi().packageRoot),
+    windowsHide: true,
+  })
+  if (result.status !== 0) {
+    throw new Error(result.stderr?.trim() || `rollback migration runtime exited ${result.status ?? 1}`)
+  }
+  return JSON.parse(result.stdout)
+}
+
 export async function runLauncher(args = process.argv.slice(2)) {
   migrateLegacyBunGlobalManifest()
   reportLegacyFlatAdoption()
@@ -226,6 +240,7 @@ export async function runLauncher(args = process.argv.slice(2)) {
   if (command === "daemon") {
     const outcome = runDaemonCommand(args.slice(1), {
       engine: { run: engineHostCall },
+      migration: { run: rollbackMigrateCall },
       pluginRoot: join(packageRoot, "plugin"),
       agentDir: canonicalAgentDir(),
       env: process.env,
@@ -273,6 +288,12 @@ export async function runLauncher(args = process.argv.slice(2)) {
   // self-update spelling runs the product command instead of asking senpi to move the pin.
   if (isSelfUpdate(args)) {
     process.exitCode = await runSelfUpdate(args)
+    return
+  }
+  // app-server takes the plugin after its subcommand: a leading --extension never reaches the
+  // engine's app-server dispatch. It loads into every thread, including the daemon's.
+  if (command === "app-server") {
+    await spawnSenpi(args.includes("--no-extensions") ? args : [...args, "--extension", join(packageRoot, "plugin")], false)
     return
   }
   if (earlyCommands.has(command) || command === "update") {

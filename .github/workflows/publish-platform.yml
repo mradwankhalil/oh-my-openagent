@@ -49,8 +49,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { host: darwin-arm64, runner: macos-15-xlarge, rust_target: aarch64-apple-darwin, binary: senpi-desktop-engine }
-          - { host: darwin-x64, runner: macos-15-xlarge, rust_target: x86_64-apple-darwin, binary: senpi-desktop-engine }
+          - { host: darwin-arm64, runner: macos-15, rust_target: aarch64-apple-darwin, binary: senpi-desktop-engine }
+          - { host: darwin-x64, runner: macos-15, rust_target: x86_64-apple-darwin, binary: senpi-desktop-engine }
           - { host: linux-x64, runner: ubuntu-22.04, rust_target: x86_64-unknown-linux-gnu, binary: senpi-desktop-engine }
           - { host: win32-x64, runner: windows-latest, rust_target: x86_64-pc-windows-msvc, binary: senpi-desktop-engine.exe }
     steps:
@@ -68,6 +68,11 @@ jobs:
           rustup target add "${{ matrix.rust_target }}"
 
       - name: Build desktop engine
+        env:
+          # rustc defaults x86_64-apple-darwin to macOS 10.12, which links the Swift back-deploy
+          # libraries through @rpath with no LC_RPATH: the x64 engine then aborts in dyld at launch.
+          # 11.0 is the arm64 default and keeps both Darwin engines on the OS Swift runtime.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: cargo build --release -p senpi-desktop-engine --locked --target "${{ matrix.rust_target }}"
 
       - name: Stage desktop engine release asset
@@ -80,6 +85,33 @@ jobs:
       - name: Smoke native desktop engine
         if: matrix.host != 'darwin-x64'
         run: "target/${{ matrix.rust_target }}/release/${{ matrix.binary }} --selftest"
+
+      - name: Smoke x64 Darwin desktop engine under Rosetta
+        if: matrix.host == 'darwin-x64'
+        run: |
+          arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 "target/${{ matrix.rust_target }}/release/${{ matrix.binary }}" --selftest
+
+      - name: Sign and notarize Darwin desktop engine
+        if: startsWith(matrix.host, 'darwin-')
+        timeout-minutes: 75
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          MACOS_SIGNING_REQUIRED: ${{ vars.MACOS_SIGNING_REQUIRED }}
+          HOST: ${{ matrix.host }}
+        run: |
+          set -euo pipefail
+          ASSET=".omo/desktop-engine-assets/senpi-desktop-engine-${HOST}"
+          bash .github/scripts/macos-sign-and-notarize.sh --identifier ai.sisyphuslabs.senpi-desktop-engine "$ASSET"
+          if [ "$HOST" = darwin-x64 ]; then
+            arch -x86_64 "$ASSET" --selftest
+          else
+            "$ASSET" --selftest
+          fi
 
       - name: Upload desktop engine artifact
         uses: actions/upload-artifact@v7
@@ -98,7 +130,7 @@ jobs:
           JOB_SUMMARY_DETAILS: |
             - Builds the Rust desktop engine for the declared host.
             - Stages the shared release asset name and signs Darwin binaries.
-            - Runs --selftest on native legs; the x64 Darwin cross-build is checked by cargo.
+            - Runs --selftest on every leg; the x64 Darwin cross-build runs it under Rosetta.
           JOB_SUMMARY_NEXT: Check the Rust target build or signed asset staging output.
         run: GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" bash .github/scripts/write-job-summary.sh
 
@@ -342,6 +374,26 @@ jobs:
           echo "Built release binary:"
           ls -lh .omo/release-binaries/
         timeout-minutes: 45
+
+      - name: Sign and notarize Darwin release binary
+        if: steps.release-assets.outputs.binary_exists != 'true' && startsWith(matrix.platform, 'darwin-')
+        timeout-minutes: 75
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          MACOS_SIGNING_REQUIRED: ${{ vars.MACOS_SIGNING_REQUIRED }}
+          BINARY: omo-${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/macos-sign-and-notarize.sh \
+            --identifier ai.sisyphuslabs.omo \
+            --entitlements .github/scripts/omo-bun-executable.entitlements \
+            ".omo/release-binaries/${BINARY}"
+          # Signing rewrites the bytes the build step digested.
+          (cd .omo/release-binaries && shasum -a 256 "$BINARY" > SHA256SUMS)
 
       - name: Smoke test release binary
         if: steps.release-assets.outputs.binary_exists != 'true'

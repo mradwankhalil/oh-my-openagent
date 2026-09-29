@@ -12,13 +12,14 @@ import { createRpcManagedRunner } from "../../../manager/runner"
 import type { StartResult } from "../../../manager/types"
 import type { TaskRecord } from "../../../state"
 import { createTaskRecordStore, type TaskRecordStore } from "../../../store"
-import { isHostSessionHandle, RpcHostRunner } from "../../rpc-host"
-import type { RpcChildHandle, RpcRunnerSpec } from "../../types"
+import { RpcHostRunner } from "../../rpc-host"
+import type { RpcRunnerSpec } from "../../types"
 import { closeHostSession } from "../close"
 import { HostSessionClient } from "../session-client"
 import { startFakeHost, type FakeHost, type FakeHostOptions } from "./fake-host"
 import { listFakeHostSessions, probeFakeHost } from "./fake-host-probe"
 import { fakeCloseChannel, fakeFallbackRunner } from "./host-world-ports"
+import { NO_HOST_ENDPOINT } from "../../../lifecycle/host-session"
 
 /**
  * A daemon and the parent sessions that share it: one fake host on a private socket, one project
@@ -127,6 +128,17 @@ function connectParent(input: ConnectParentInput): ParentSession {
   const runner = new RpcHostRunner({
     policy: "upgrade",
     agentDir: join(projectDir, "agent"),
+    storeDir: store.stateDir,
+    shardResolver: () => ({
+      socket: socketPath,
+      shard: { kind: "p", key: "0000000000000000", ownerSessionId: sessionId, inherited: false },
+      root: "primary",
+    }),
+    ownHostSocket: () => undefined,
+    insideHost: () => false,
+    onNotice: () => undefined,
+    shardEvents: {},
+    probeHost: () => probeFakeHost(socketPath),
     env: {},
     ensureDaemon: () =>
       Promise.resolve({
@@ -147,27 +159,8 @@ function connectParent(input: ConnectParentInput): ParentSession {
     },
     ...(input.options.useFallback === true ? { fallback } : {}),
   })
-  // The record fields a started child leaves behind. Production stamps them when the omo-senpi
-  // component owns the runner (plan todo 34); until then the suite writes exactly what that wiring
-  // will, so the lifecycle branches under test see a real host-session record.
-  const launch = {
-    start: async (spec: RpcRunnerSpec): Promise<RpcChildHandle> => {
-      const handle = await runner.start(spec)
-      if (isHostSessionHandle(handle)) {
-        store.mutate(spec.task_id, (fresh) => ({
-          ...fresh,
-          runner_kind: "host-session",
-          host_session: {
-            socket: handle.hostSession.socket,
-            routing_id: handle.hostSession.routingId,
-            session_path: handle.hostSession.sessionPath,
-            instance_id: handle.hostSession.instanceId,
-          },
-        }))
-      }
-      return handle
-    },
-  }
+  // The manager stamps a started or reattached child's host session itself, exactly as production.
+  const launch = runner
   const manager = createTaskManager({
     store,
     config,
@@ -183,6 +176,7 @@ function connectParent(input: ConnectParentInput): ParentSession {
     ...(input.options.hostPid === undefined ? {} : { hostPid: input.options.hostPid }),
   })
   const lifecycle = createTaskLifecycle({
+    hostEndpoint: NO_HOST_ENDPOINT,
     store,
     config,
     registry: createManagerResidencyRegistry(() => manager),
@@ -201,6 +195,7 @@ function connectParent(input: ConnectParentInput): ParentSession {
       maxDrainAttempts: input.options.maxDrainAttempts ?? 3,
       defaultRetryAfterMs: 2_000,
       daemonLossBackoffMs: [1_000, 4_000, 16_000],
+      deferredRetryBackoffMs: [],
       wait: (ms) => {
         waits.push(ms)
         return Promise.resolve()

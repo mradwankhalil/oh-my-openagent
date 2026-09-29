@@ -10,6 +10,7 @@ export {
 } from "./handshake";
 export {
 	DESKTOP_ENGINE_BINARY,
+	type DesktopEngineLibc,
 	type DesktopEngineLocateDiagnostic,
 	type DesktopEngineLocateDiagnosticCode,
 	type DesktopEngineLocation,

@@ -226,6 +226,26 @@ fn one_mutating_call_emits_an_audit_carrying_every_audit_field() {
 }
 
 #[test]
+fn clipboard_write_then_read_roundtrips_through_the_engine_session() {
+    // Given
+    let mut engine = two_displays();
+    make_stop_path_live(&mut engine);
+    // When
+    let written = engine.invoke(
+        "clipboard.write",
+        json!({"text": "senpi-clipboard-roundtrip"}),
+    );
+    let read = engine.invoke("clipboard.read", json!({}));
+    // Then
+    assert_eq!(written.get("result"), Some(&Value::Null), "{written}");
+    assert_eq!(
+        read["result"],
+        json!({"text": "senpi-clipboard-roundtrip"}),
+        "{read}"
+    );
+}
+
+#[test]
 fn without_a_backend_capture_fails_and_every_input_stops_at_the_stop_path() {
     // Given: the selected scenario does not exist, so no backend is constructed
     let mut engine = headless(fake_backend("does/not/exist.json"), &[]);

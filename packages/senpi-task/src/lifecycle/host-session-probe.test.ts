@@ -101,4 +101,26 @@ describe("host session probe", () => {
     expect(alive).toBe(false)
     expect(live).toBe(false)
   })
+
+  test("#given two cached shards #when one recorded socket refreshes #then only that shard is probed again", async () => {
+    // given
+    const calls: string[] = []
+    const first = { ...identity("/a.jsonl"), socket: "/tmp/p-1111111111111111.sock" }
+    const second = { ...identity("/b.jsonl"), socket: "/tmp/p-2222222222222222.sock" }
+    const probe = createHostSessionProbe({
+      daemonReachable: async (socket) => {
+        calls.push(socket)
+        return true
+      },
+      liveSessionPaths: () => Promise.resolve([]),
+    })
+    await Promise.all([probe.daemonAlive(first), probe.daemonAlive(second)])
+
+    // when
+    probe.refresh(first.socket)
+    await Promise.all([probe.daemonAlive(first), probe.daemonAlive(second)])
+
+    // then
+    expect(calls).toEqual([first.socket, second.socket, first.socket])
+  })
 })

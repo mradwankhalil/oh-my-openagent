@@ -19,6 +19,7 @@ mod timeouts;
 mod worker;
 mod worker_ax;
 mod worker_capture;
+mod worker_clipboard;
 mod worker_input;
 
 pub use mutate::SessionSafety;

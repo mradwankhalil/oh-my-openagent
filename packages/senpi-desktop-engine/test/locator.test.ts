@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDesktopEngineCandidatePaths, locateDesktopEngine } from "../src/locator";
+import { getDesktopEngineCandidatePaths, getDesktopEngineHost, libcFromSignals, locateDesktopEngine } from "../src/locator";
 
 const platform = "darwin";
 const arch = "arm64";
@@ -156,5 +156,66 @@ describe("getDesktopEngineCandidatePaths", () => {
 			path.join(layout.packageDir, "native", "prebuilds", "win32-x64", "senpi-desktop-engine.exe"),
 			path.join(layout.repoRoot, "target", "release", "senpi-desktop-engine.exe"),
 		]);
+	});
+});
+
+describe("getDesktopEngineHost", () => {
+	it("names the libc on Linux so a musl host never resolves to the glibc engine", () => {
+		expect(getDesktopEngineHost("linux", "x64", "glibc")).toBe("linux-x64");
+		expect(getDesktopEngineHost("linux", "arm64", "glibc")).toBe("linux-arm64");
+		expect(getDesktopEngineHost("linux", "x64", "musl")).toBe("linux-x64-musl");
+		expect(getDesktopEngineHost("linux", "arm64", "musl")).toBe("linux-arm64-musl");
+	});
+
+	it("leaves non-Linux hosts unchanged whatever libc is passed", () => {
+		expect(getDesktopEngineHost("darwin", "arm64", "musl")).toBe("darwin-arm64");
+		expect(getDesktopEngineHost("win32", "x64", "musl")).toBe("win32-x64");
+		expect(getDesktopEngineHost("darwin", "x64")).toBe("darwin-x64");
+	});
+
+	it("does not apply this process's libc to a platform it is not running on", () => {
+		const foreign = process.platform === "linux" ? "darwin" : "linux";
+
+		expect(getDesktopEngineHost(foreign, "x64")).toBe(`${foreign}-x64`);
+	});
+});
+
+describe("getDesktopEngineCandidatePaths on musl", () => {
+	it("searches the musl prebuild directory", () => {
+		const paths = getDesktopEngineCandidatePaths({
+			arch: "arm64",
+			execDir: layout.execDir,
+			libc: "musl",
+			packageDir: layout.packageDir,
+			platform: "linux",
+			repoRoot: layout.repoRoot,
+			runtimeDir: "",
+		});
+
+		expect(paths).toEqual([
+			path.join(layout.execDir, "native", "prebuilds", "linux-arm64-musl", "senpi-desktop-engine"),
+			path.join(layout.packageDir, "native", "prebuilds", "linux-arm64-musl", "senpi-desktop-engine"),
+			path.join(layout.repoRoot, "target", "release", "senpi-desktop-engine"),
+		]);
+	});
+});
+
+describe("libcFromSignals", () => {
+	const glibcReport = { header: { glibcVersionRuntime: "2.41" } };
+	const muslReport = { header: { osName: "Linux" } };
+	const muslMaps = "7f0000-7f1000 r-xp 00000000 00:2a 123 /lib/ld-musl-aarch64.so.1\n";
+	const glibcMaps = "7f0000-7f1000 r-xp 00000000 00:2a 123 /usr/lib/aarch64-linux-gnu/libc.so.6\n";
+
+	it("reads glibc from the runtime glibc version the report carries, even with musl installed", () => {
+		expect(libcFromSignals(glibcReport, () => muslMaps)).toBe("glibc");
+	});
+
+	it("reads musl when the report omits glibc and the musl loader is mapped into the process", () => {
+		expect(libcFromSignals(muslReport, () => muslMaps)).toBe("musl");
+	});
+
+	it("keeps glibc when neither signal proves musl", () => {
+		expect(libcFromSignals(muslReport, () => glibcMaps)).toBe("glibc");
+		expect(libcFromSignals(undefined, () => undefined)).toBe("glibc");
 	});
 });

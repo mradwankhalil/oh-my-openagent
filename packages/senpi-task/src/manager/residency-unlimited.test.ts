@@ -13,6 +13,7 @@ import {
 } from "./__fixtures__/manager-fakes"
 import { createTaskManager } from "./manager"
 import type { SpawnAdmission, TaskManager } from "./types"
+import { NO_HOST_ENDPOINT } from "../lifecycle/host-session"
 
 afterEach(cleanupProjects)
 
@@ -52,7 +53,7 @@ function makeUnlimitedManager(residency: Record<string, unknown> = { residency_m
     forget: (taskId) => manager().forget(taskId),
     hasPendingSends: () => false,
   }
-  const lifecycle = createTaskLifecycle({ store, registry, config })
+  const lifecycle = createTaskLifecycle({ hostEndpoint: NO_HOST_ENDPOINT, store, registry, config })
   managerRef = createTaskManager({
     store,
     runners: { "in-process": runner, process: runner },

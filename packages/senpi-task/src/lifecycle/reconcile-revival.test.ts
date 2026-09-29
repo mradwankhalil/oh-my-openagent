@@ -12,6 +12,7 @@ import { acquireSessionAdmissionLease } from "./admission-lease"
 import { createTaskLifecycle } from "./create"
 import type { ProcessSignaller, RespawnResult } from "./port"
 import { cleanupProjects, FakeRegistry, seedRecord, settings, tempStore } from "./__fixtures__/lifecycle-fakes"
+import { NO_HOST_ENDPOINT } from "./host-session"
 
 afterEach(cleanupProjects)
 
@@ -74,6 +75,7 @@ function injectedHarness(options: {
     },
   }
   const lifecycle = createTaskLifecycle({
+    hostEndpoint: NO_HOST_ENDPOINT,
     store,
     registry,
     config: settings(options.config),
@@ -403,6 +405,7 @@ describe("reconcileOnSessionStart scoped revival", () => {
     })
     store.replace({ ...withV1(store, seeded, "persisted effective prompt"), pending_steering: queue })
     const lifecycle = createTaskLifecycle({
+      hostEndpoint: NO_HOST_ENDPOINT,
       store,
       registry: {
         get: (taskId) => manager.getResidentHandle(taskId) === undefined ? undefined : {
@@ -638,6 +641,7 @@ describe("reconcileOnSessionStart scoped revival", () => {
     })
     if (held.kind !== "acquired") throw new Error("expected held admission lease")
     const contended = createTaskLifecycle({
+      hostEndpoint: NO_HOST_ENDPOINT,
       store: harness.store,
       registry: new FakeRegistry(),
       config: settings(), hostPid, now,

@@ -1,32 +1,48 @@
-## computer use: forward the macOS canary policy (#8945)
+## skill-commands, skills: argument-taking skills wait for their arguments in the slash picker (#9168)
 
-The shipped extension now passes `computer.macos_canary` through the desktop
-service to the native session. Explicit `off` reaches the macOS backend;
-omitting the setting keeps `session`. The native session validates the policy
-and applies it again when opening or reconfiguring a backend.
+- `skills/{hyperplan,init-deep,mass-ulw,ulw-loop,ulw-plan,ulw-research}/SKILL.md` and the shared-pool
+  `ulw-execute`, `refactor` and `remove-ai-slops` declare `argument-hint`. From senpi#2258 on, the picker reads it
+  (`Skill.argumentHint`) and Enter on a `skill:<name>` row fills `/skill:<name> ` and waits instead of submitting the
+  skill empty. Skills that take no arguments stay hint-less and still submit on one Enter.
+- `components/skill-commands/autocomplete.ts`: a bare alias row mirrors its own `skill:<name>` row on the same page,
+  taking its description (which carries the hint) and `awaitsArguments`, so `/ulw-execute` waits exactly when
+  `/skill:ulw-execute` does. `pi.getCommands()` carries no hint, so the page row is the source. Without the skill row
+  the alias falls back to the command description and submits as before.
+- `components/skill-commands/argument-hints.test.ts` parses every shipped SKILL.md with the engine's own
+  `parseFrontmatter` (native copy over the shared one, as `sync-skills.mjs` ships them) and pins the set of hinted
+  skills.
 
-## Facts: bounded recovery for one oversized entry (#8984)
+## computer-use, x-search: a feature skill yields to a loaded same-name skill and honors disabled_skills (#9160)
 
-**Behavior change for memory users.** A facts entry larger than the 128 KiB batch cap used to be parked and never extracted; it now gets one bounded extraction run after all ordinary batches are done: the complete entry up to 512 KiB, at most 8 provider requests of at most 4,096 output tokens each, no retry and no model fallback. That run costs provider calls and can commit new facts to the memory repository. Entries above 512 KiB, or whose pinned model's context is unknown or too small, stay parked as before.
+- `components/bundled-skills/contributed-skill.ts`: `resolveContributedSkill` decides one `resources_discover` pass for a
+  skill a component contributes on its own. `disabled_skills` hides it (`readDisabledSkills`, now shared with the
+  bundled-skills component). A `skill:<name>` entry in `pi.getCommands()` whose `sourceInfo.path` is not ours means
+  senpi already loaded a same-name skill, which wins first-path either way, so ours is withheld instead of becoming a
+  "Skill conflicts" collision. Our own path left over from an earlier pass still contributes.
+- `components/computer-use/index.ts`: the `computer-use` skill goes through it; `/computer status` adds
+  `skill: your own computer-use skill is active in place of the built-in guide (<path>)` when it yielded. New `env`
+  option for the config read.
+- `components/x-search/index.ts`: the conditional `x-search` skill goes through it. Both tools stay registered.
+- `extension/types.ts`: `getCommands()` entries carry the optional `sourceInfo.path` senpi already reports.
 
-An indivisible facts entry previously parked permanently once its complete payload exceeded 128 KiB. Ordinary batches keep that cap. When no ordinary batch remains, one complete entry may now launch under an explicit 512 KiB ceiling only if the pinned model has known sufficient context; input is neither truncated nor split. Every provider request checks complete serialized context and actual model capacity, with at most 8 requests, 4,096 output tokens each, and no retry/fallback. Construction-time guards abort compaction or reduced context and reject truncated output. Accepted extraction is limited to 128 KiB/256 records, with concurrent reservations; any guard failure invalidates the entire result. Existing deadline, failure parking and one receipt/apply/consume boundary remain. These are bounded model-work and exact input/extraction limits, not a hard child-journal disk quota.
+## memory: a late Kibitzer verdict no longer steers an extra turn after the final answer
 
-Validation: 109 facts tests, adapter TypeScript check, generic/TypeScript review and real isolated Senpi CLI/local-mock QA pass. The 204,058-byte fixture reaches the provider unchanged and commits/consumes once. Actual overflow compaction, output truncation, byte overflow and request exhaustion all retain the original queue with zero commits. Cancellation and crash-after-apply receipt recovery are covered.
+- `components/memory/kibitzer/delivery.ts`: an accepted verdict steers at once only while the running session has a
+  tool call executing. The host reads its steering queue after every turn, so a steer queued once the final answer
+  was streaming or streamed started one more assistant turn after it; a headless `senpi -p` consumer that posts only
+  the last assistant text then lost the real answer (observed as `answer -> omo-kibitzer:recall -> "NO_REPLY"`). Such a
+  verdict is now held for the next `tool_result` steer or the next prompt's drain, like any other held nudge.
+- `components/memory/kibitzer/hooks.ts`: `tool_call` / `tool_result` report the executing call ids to delivery, and a
+  new `turn_end` hook clears them so a call that never reports a result (blocked, aborted) cannot outlive its turn.
 
-## QA drivers: children run on the sandbox, never on the caller's install or daemon
+## model-profile, task: builtin lanes and the category notice never route to an unlisted gateway (#9146)
 
-`scripts/qa/sandbox-child-env.mjs` (new): `isolatedChildEnv(baseEnv, agentDir)` builds a driver's child
-environment. It points every agent-dir lane (`OMO_`/`SENPI_`/`PI_CODING_AGENT_DIR`) at the sandbox, and
-drops the task-host routing variables that `resolveTaskHostSocket` honours before the agent dir
-(`OMO_RPC_SOCKET`, `SENPI_RPC_SOCKET`, `PI_RPC_SOCKET`, `OMO_RPC_SOCKET_PATH`), every
-`SENPI_RPC_HOST_*` variable, and the launching session's identity (`PI_SESSION_ID`, `PI_SESSION_FILE`,
-`PI_SESSION_CWD`, `PI_GOAL_STORE_FILE`, `SENPI_SESSION_FILE`, `SENPI_PY_KERNEL_PARENT_PID`). 38 drivers
-that spread the caller's environment and overrode only `SENPI_CODING_AGENT_DIR` now build through it.
-The omo launcher exports `OMO_CODING_AGENT_DIR` to every tool child and that lane outranks
-`SENPI_CODING_AGENT_DIR`, so a driver started from an OmO session put its task children on the
-machine's production daemon inside a temp project it later deleted, and the host then failed every
-open (code-yeongyu/senpi#2206). `sandbox-child-env.test.mjs` unit-tests the scrub and fails when a
-driver pairs a caller-environment spread with a `SENPI_CODING_AGENT_DIR` override without the builder.
-The self-test fixtures of `task-tui-e2e.mjs` and `ulw-goal-footer-tui.mjs` model the contaminated
-caller explicitly instead of spreading the real environment.
+- `components/model-profile/resolve.ts`: every builtin rung, in `recommended` and in the `daily-*`/`geeky-*` lanes, is
+  served only by its listed providers, so a lane never lands the session on a gateway's copy of its model
+  (`opengateway/anthropic/claude-opus-5-5`). A lane no listed provider serves is `unavailable` and keeps the session
+  model with the existing one-line notice. A user's bare model id, which names no provider, still matches anywhere.
+  `rankedProvidersOnly` is gone: it was the only builtin that had the listed-only rule, which is now the rule.
+- `components/task/category-unavailable-warning.ts`: when only an unlisted provider serves a hidden category's chain,
+  the one notice per session names it and the exact opt-in line
+  (`categories.<name>.model = "<gateway>/<model>"`); `details.unlisted_provider_model` carries it for remote clients.
 

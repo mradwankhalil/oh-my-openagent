@@ -11,6 +11,7 @@ import {
   settings,
   tempStore,
 } from "./__fixtures__/lifecycle-fakes"
+import { NO_HOST_ENDPOINT } from "./host-session"
 
 afterEach(cleanupProjects)
 
@@ -58,6 +59,7 @@ describe("cleanupExpiredRecords tombstone recovery", () => {
     renameSync(recordPath(store, taskId), tombstonePath)
     const childDirExistedAtClose: boolean[] = []
     const lifecycle = createTaskLifecycle({
+      hostEndpoint: NO_HOST_ENDPOINT,
       store,
       registry: new FakeRegistry(),
       config: settings({ ttl_ms: TTL }),
@@ -99,6 +101,7 @@ describe("cleanupExpiredRecords tombstone recovery", () => {
     })
     renameSync(recordPath(store, validId), `${recordPath(store, validId)}.expunging`)
     const lifecycle = createTaskLifecycle({
+      hostEndpoint: NO_HOST_ENDPOINT,
       store,
       registry: new FakeRegistry(),
       config: settings({ ttl_ms: TTL }),
@@ -132,6 +135,7 @@ describe("cleanupExpiredRecords tombstone recovery", () => {
     renameSync(recordPath(store, taskId), `${recordPath(store, taskId)}.expunging`)
     const signals: string[] = []
     const lifecycle = createTaskLifecycle({
+      hostEndpoint: NO_HOST_ENDPOINT,
       store,
       registry: new FakeRegistry(),
       config: settings({ ttl_ms: TTL }),
