@@ -60,6 +60,9 @@ export async function runPreemptiveCompactionIfNeeded(args: {
   compactedSessions: Set<string>
   lastCompactionTime: Map<string, number>
   summarizeStartedAt: Map<string, SummarizeAttempt>
+  loopBreaker?: {
+    isBroken: (sessionID: string) => boolean
+  }
 }): Promise<void> {
   const {
     ctx,
@@ -71,6 +74,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
     compactedSessions,
     lastCompactionTime,
     summarizeStartedAt,
+    loopBreaker,
   } = args
 
   const previousAttempt = summarizeStartedAt.get(sessionID)
@@ -86,6 +90,10 @@ export async function runPreemptiveCompactionIfNeeded(args: {
     summarizeStartedAt.delete(sessionID)
     compactionInProgress.delete(sessionID)
   }
+
+  // fix: compaction-loop-breaker — once a session's compactions have proven
+  // ineffective twice, never trigger again for it (handoff note already written).
+  if (loopBreaker?.isBroken(sessionID)) return
 
   if (compactedSessions.has(sessionID) || compactionInProgress.has(sessionID)) return
 

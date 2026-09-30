@@ -5,6 +5,7 @@ import type { ContextLimitModelCacheState } from "../shared/context-limit-resolv
 
 import { createPostCompactionDegradationMonitor } from "./preemptive-compaction-degradation-monitor"
 import { runPreemptiveCompactionIfNeeded } from "./preemptive-compaction-trigger"
+import { createCompactionLoopBreaker } from "./preemptive-compaction-loop-breaker"
 import type {
   CachedCompactionState,
   PreemptiveCompactionContext,
@@ -31,6 +32,14 @@ export function createPreemptiveCompactionHook(
     compactionInProgress,
   })
 
+  // fix: compaction-loop-breaker — after 2 consecutive compactions that do not
+  // reduce the reported usage, disable preemptive compaction for the session and
+  // write a handoff note (claude-code bridge keeps full history otherwise).
+  const loopBreaker = createCompactionLoopBreaker({
+    client: ctx.client,
+    directory: ctx.directory,
+  })
+
   const toolExecuteAfter = async (
     input: { tool: string; sessionID: string; callID: string },
     _output: { title: string; output: string; metadata: unknown }
@@ -45,6 +54,7 @@ export function createPreemptiveCompactionHook(
       compactedSessions,
       lastCompactionTime,
       summarizeStartedAt,
+      loopBreaker,
     })
   }
 
@@ -60,6 +70,7 @@ export function createPreemptiveCompactionHook(
         summarizeStartedAt.delete(sessionID)
         tokenCache.delete(sessionID)
         postCompactionMonitor.clear(sessionID)
+        loopBreaker.clear(sessionID)
       }
       return
     }
@@ -71,6 +82,7 @@ export function createPreemptiveCompactionHook(
         // threshold by definition. Reusing it after the prompt has been replaced would
         // immediately justify another compaction (observed firing at 7% real usage).
         // Drop it; the next finished non-compaction assistant message re-populates it.
+        loopBreaker.onSessionCompacted(sessionID, tokenCache.get(sessionID)?.tokens)
         tokenCache.delete(sessionID)
         postCompactionMonitor.onSessionCompacted(sessionID)
       }
@@ -102,6 +114,11 @@ export function createPreemptiveCompactionHook(
           tokens: info.tokens,
           agent: typeof info.agent === "string" ? info.agent : undefined,
         })
+        loopBreaker.onPostCompactionUsage(
+          sessionID,
+          info.tokens,
+          info.modelID ? `${info.providerID}/${info.modelID}` : undefined,
+        )
       }
       compactedSessions.delete(sessionID)
 
