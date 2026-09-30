@@ -219,6 +219,21 @@
         "13-compaction-pin-checkpoint"
       ],
       "orderNote": "Independent of 13 (pin-state guard); this fixes the structural detection. Apply after 13."
+    },
+    {
+      "id": "16-compaction-loop-breaker",
+      "title": "Break the compaction loop after 2 ineffective rounds; write a handoff note",
+      "commit": "b3941dcbc853b38e8af0608e42464b3b4af57fd8",
+      "patch": "local-fixes/patches/16-compaction-loop-breaker.patch",
+      "why": "On claude-code bridged sessions the bridge keeps its own conversation state: opencode compaction rewrites the DB view (M3 summarize input shrinks 104K->26K->9K) but the continuation prompt stays at the full unreduced size (~780K tokens, cacheRead grows across rounds). Every finished assistant message repopulates the trigger cache with ~780K usage, usageRatio ~= 3.9 vs threshold 0.78, and the trigger re-fires every 60s cooldown forever (ses_f10e47816: six compactions in 14 minutes, round 2 fired 29s after round 1 with ~100 chars of new content). Fix: after 2 consecutive compactions that fail to reduce usage by >=30%, disable preemptive compaction for the session, toast a warning, and write a deterministic plugin-side handoff note (with the last compaction summary) to .omo/handoffs/.",
+      "markers": [
+        "compaction-loop-breaker"
+      ],
+      "overlapsWith": [
+        "13-compaction-pin-checkpoint",
+        "14-compaction-part-marker"
+      ],
+      "orderNote": "Apply after 14."
     }
   ],
   "externalFixes": [
