@@ -121,6 +121,24 @@ test.describe("Docs Page", () => {
     await expect(page.locator("#fix-your-path")).toBeInViewport()
   })
 
+  test("each guide page OmO Desktop links to renders its title and sidebar", async ({ page }) => {
+    for (const [route, title, section] of [
+      ["/docs/workflows", "Workflows", "Start a workflow"],
+      ["/docs/agents", "Agents", "The Agents panel in OmO Desktop"],
+      ["/docs/keywords", "Keywords", "The keywords"],
+      ["/docs/telemetry", "Telemetry", "Turn it off"],
+      ["/docs/desktop-updates", "Desktop updates", "Release notes"],
+    ] as const) {
+      // given / when
+      await page.goto(route)
+
+      // then
+      await expect(page).toHaveTitle(new RegExp(title))
+      await expect(page.getByRole("heading", { name: title, level: 1 })).toBeVisible()
+      await expect(page.getByRole("button", { name: section, exact: true })).toBeVisible()
+    }
+  })
+
   test("the old get.omo.dev docs link lands on the install page", async ({ page }) => {
     // given
     await page.goto("/docs/guide/installation")

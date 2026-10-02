@@ -46,6 +46,9 @@ describe("dead-chain category disabling", () => {
         "anthropic-subscription",
         "anthropic-api",
         "github-copilot",
+        "zai",
+        "zai-coding-cn",
+        "xiaomi",
       ])
     })
 

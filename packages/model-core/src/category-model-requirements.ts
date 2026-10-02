@@ -32,8 +32,11 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
   },
   "deep-low": {
     fallbackChain: [
-      // Plain gpt-5.6-sol leads on every lane that serves it. The Fast (priority) tier exists only on
-      // the OpenAI lanes, so it is the fallback there at the same effort.
+      // GPT-6.1 Sol leads at the same medium effort: it matches GPT-6 Sol's price with near-Astra
+      // quality, but only the OpenAI lanes serve it (plain, then the Fast tier). GPT-5.6 Sol stays
+      // behind it so Copilot, OpenCode Zen and a registry without 6.1 still resolve the lane.
+      { providers: ["openai", "chatgpt-subscription"], model: "gpt-6.1-sol", variant: "medium" },
+      { providers: ["openai", "chatgpt-subscription"], model: "gpt-6.1-sol-fast", variant: "medium" },
       {
         providers: ["openai", "chatgpt-subscription", "github-copilot", "opencode"],
         model: "gpt-5.6-sol",
@@ -47,7 +50,7 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
       {
         providers: ["openai", "chatgpt-subscription", "github-copilot", "opencode"],
         model: "gpt-6-astra",
-        variant: "xhigh",
+        variant: "high",
       }
     ],
   },
@@ -86,7 +89,10 @@ export const CATEGORY_MODEL_REQUIREMENTS: Record<string, ModelRequirement> = {
         providers: ["anthropic", "anthropic-api", "github-copilot"],
         model: "claude-haiku-4-5",
         variant: "off",
-      }
+      },
+      // Trailing: only a Z.ai-only or Xiaomi-only machine reaches these (#9202).
+      { providers: ["zai-coding-plan"], model: "glm-5.3-flash", variant: "low" },
+      { providers: ["xiaomi"], model: "mimo-v2.6-flash", variant: "low" }
     ],
   },
   "unspecified-low": {

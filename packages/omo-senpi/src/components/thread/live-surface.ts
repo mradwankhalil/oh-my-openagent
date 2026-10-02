@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { resolveTaskHostSocket, TASK_HOST_SOCKET_ENV_NAMES } from "../../../../senpi-task/src/runners/rpc-host/daemon"
+import { resolveProjectStateDirectory } from "../../../../senpi-task/src/store/project-state-directory"
 import type { SenpiExtensionAPI } from "../../extension/types"
 import { resolveAgentHome } from "../agent-home/resolve-agent-home"
 import { resolveSenpiLaunch, withoutForeignPackageDirEnv } from "../memory/worker/senpi-command"
@@ -260,4 +261,4 @@ export function createLiveThreadSurface(_pi: SenpiExtensionAPI, options: LiveThr
   }
 }
 
-export function defaultThreadStateDirectory(pi: SenpiExtensionAPI): string { return join(pi.cwd ?? process.cwd(), ".omo", "thread-tools") }
+export function defaultThreadStateDirectory(pi: SenpiExtensionAPI): string { return resolveProjectStateDirectory(pi.cwd ?? process.cwd(), "thread-tools") }

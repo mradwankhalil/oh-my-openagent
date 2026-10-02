@@ -32,12 +32,21 @@
 //                  the wake falls back to it inside the SAME turn, the nudge reaches the parent, the
 //                  wake record is a non-diagnostic completion on the fallback model, and no gate
 //                  notice is raised.
+//   cjk-auto       no recall setting: a Korean prompt that only shares an inflected verb form with a stored
+//                  memory's stem still offers that memory to the sidecar (recall picks bm25 with CJK bigrams on
+//                  its own), and its nudge reaches the parent.
+//   query-expansion
+//                  `memory.recall.query_expansion` is on: the sidecar's memory tool is sent to the provider
+//                  with the four added-term fields, a search whose own words match no memory finds one
+//                  through its synonyms, and that memory - never offered as a candidate - is nudged and
+//                  reaches the parent.
 //
 // Every wait is an RPC event, a filesystem change or a process exit with a bounded timeout. Evidence
 // is structured: the mock's request log, the parent session JSONL and every child transcript.
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
+import { isDeepStrictEqual } from "node:util"
 
 import { startMockCompletionsServer } from "./mock-completions-server.mjs"
 import {
@@ -83,7 +92,7 @@ import {
   writeOmoConfig,
 } from "./kibitzer-sidecar-support.mjs"
 
-export const SCENARIOS = ["happy", "provider-429", "context-reseed", "category-unavailable", "refused-pinned-model"]
+export const SCENARIOS = ["happy", "provider-429", "context-reseed", "category-unavailable", "refused-pinned-model", "cjk-auto", "query-expansion"]
 /** The pinned model the refused-pinned-model provider refuses, and the builtin quick rung it falls back to. */
 const REFUSED_MODEL = "refused-1"
 const BUILTIN_RUNG = { provider: "deepseek", id: "deepseek-flash" }
@@ -91,6 +100,31 @@ const BUILTIN_RUNG = { provider: "deepseek", id: "deepseek-flash" }
 const CONFIG = {
   "category-unavailable": { categories: {} },
   "refused-pinned-model": { categories: { quick: { description: "QA pin outside the builtin quick chain", model: `omo-mock/${REFUSED_MODEL}` } } },
+  "query-expansion": { recall: { query_expansion: true } },
+}
+/** A search whose own words match no seeded memory; only the added terms reach the helm memory. */
+const WIDENED_SEARCH = {
+  operation: "search",
+  query: "locking dependency numbers",
+  synonyms: ["helm", "chart", "pin"],
+  keywords: ["버전"],
+  related: ["package"],
+  note_line: "Pin every chart version.",
+}
+const ADDED_TERM_FIELDS = ["synonyms", "keywords", "related", "note_line"]
+/**
+ * A Korean memory whose prompt only shares an inflected verb form with the stored stem:
+ * substring matching plans no query that matches it; the automatic strategy meets it through bigrams.
+ */
+const KOREAN_PUBLISH = {
+  path: "reference/npm-publish-ko.md",
+  description: "npm 퍼블리시 절차",
+  body: "배포 토큰은 키체인에 저장한다.",
+  prompt: "퍼블리시할 때 막히면 어디서 꺼내 써",
+}
+/** Scenario-specific seed corpus; every other scenario seeds the two disjoint English memories. */
+const SEEDS = {
+  "cjk-auto": [MEMORIES.rollout, MEMORIES.helm, KOREAN_PUBLISH],
 }
 /** A non-transient refusal: Devin's Connect trailer surfaces as `permission_denied`; an HTTP provider answers 403. */
 const PERMISSION_DENIED_STEP = {
@@ -175,7 +209,7 @@ async function withHarness(scenario, options, run) {
     facts.sandboxRoot = sandbox.root
     const env = sandboxEnv(sandbox)
     assertSandboxEnv(sandbox, env)
-    const seed = await seedMemories(command, sandbox, env, router, [MEMORIES.rollout, MEMORIES.helm])
+    const seed = await seedMemories(command, sandbox, env, router, SEEDS[scenario] ?? [MEMORIES.rollout, MEMORIES.helm])
     facts.seed = { sessionId: seed.sessionId, identities: seed.identities, results: seed.results, teardown: seed.teardown }
     if (!record(`${scenario}.memory-seeded`, seed.ok, seed.ok ? `identity=${seed.identities[0]} memories=${seed.seeded.length}` : `seed failed: ${JSON.stringify(seed.results)} identities=${seed.identities.length} stderr=${seed.stderr?.replace(/\n/g, " | ")}`)) return facts
     identity = seed.identities[0]
@@ -491,7 +525,76 @@ async function runRefusedPinnedModel({ session, state, identity, router, facts, 
   }
 }
 
-const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed, "category-unavailable": runCategoryUnavailable, "refused-pinned-model": runRefusedPinnedModel }
+// ---- cjk-auto -----------------------------------------------------------------------------------------------------
+
+async function runCjkAuto({ session, state, identity, router, facts, parentTurns, record }) {
+  router.setParentSteps([{ type: "text", text: "Checking." }, { type: "text", text: "Done." }])
+  router.setSidecarSteps([nudgeStep(KOREAN_PUBLISH)])
+
+  // No recall setting: the inflected prompt must still offer the stem memory to the sidecar.
+  await prompt(session, KOREAN_PUBLISH.prompt)
+  const held = await waitForAccepted(identity, state, KOREAN_PUBLISH, { description: "cjk-auto: inflected Korean prompt surfaced the stem memory" })
+  const lineage = sidecarDirs(identity)[0]
+  const seedText = lineage === undefined ? "" : messageText(childTranscripts(lineage.dir)[0]?.users[0])
+  const candidates = candidatePathsOf(seedText)
+  record("inflected-korean-candidate", candidates.includes(KOREAN_PUBLISH.path), `candidates=${candidates.join(",")}`)
+  record("nudge-accepted", held.nudges.some((nudge) => nudge.path === KOREAN_PUBLISH.path), `held=${JSON.stringify(held)}`)
+
+  // The next turn drains the held nudge into the parent transcript.
+  await prompt(session, KOREAN_PUBLISH.prompt)
+  const entries = readEntries(state.sessionFile)
+  record("nudge-reached-parent", nudgedPaths(entries).includes(KOREAN_PUBLISH.path) && entries.some(isRecall), `paths=${nudgedPaths(entries).join(",")} recallMessages=${entries.filter(isRecall).length}`)
+  facts.result = {
+    resident: sidecarDirs(identity).length === 1,
+    strategy: "auto",
+    candidates,
+    nudged: nudgedPaths(entries).length,
+    nudgedPaths: nudgedPaths(entries),
+    sidecarRequests: router.state.sidecar,
+    parentRequests: parentTurns(),
+  }
+}
+
+// ---- query-expansion ----------------------------------------------------------------------------------------------
+
+async function runQueryExpansion({ session, state, identity, router, facts, parentTurns, record }) {
+  router.setParentSteps([{ type: "text", text: "Checking." }, { type: "text", text: "Done." }])
+  router.setSidecarSteps([{ type: "tool_call", name: "memory", arguments: WIDENED_SEARCH }, nudgeStep(MEMORIES.helm)])
+
+  // The rollout prompt wakes the sidecar with the rollout memory only; helm is reachable through the widened search alone.
+  await prompt(session, MEMORIES.rollout.prompt)
+  const held = await waitForAccepted(identity, state, MEMORIES.helm, { description: "query-expansion: the memory found through added terms was nudged" })
+  const lineage = sidecarDirs(identity)[0]
+  const transcript = lineage === undefined ? undefined : childTranscripts(lineage.dir)[0]
+  const candidates = candidatePathsOf(messageText(transcript?.users[0]))
+  const memoryParameters = router.state.sidecarRequests[0]?.memoryParameters ?? []
+  record("schema-offers-added-terms", memoryParameters.length > 0 && ADDED_TERM_FIELDS.every((field) => memoryParameters.includes(field)), memoryParameters.length === 0 ? "memory parameters absent" : `memory parameters=[${memoryParameters.join(",")}]`)
+  const searchCall = transcript?.assistants.flatMap(toolCallsOf).find((call) => call.name === "memory")
+  record("child-searched-with-added-terms", isDeepStrictEqual(searchCall?.arguments, WIDENED_SEARCH), `search=${JSON.stringify(searchCall?.arguments ?? null)}`)
+  const searchResult = transcript?.entries.find((entry) => entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "memory" && entry.message.toolCallId === searchCall?.id)?.message
+  const results = searchResult === undefined ? [] : JSON.parse(messageText(searchResult)).results
+  record("widened-search-found-memory", searchResult?.isError !== true && Array.isArray(results) && results.some((hit) => hit.path === MEMORIES.helm.path), `memory result=${searchResult === undefined ? "absent" : messageText(searchResult)}`)
+  record("found-memory-was-never-offered", candidates.length === 1 && candidates[0] === MEMORIES.rollout.path, `candidates=${candidates.join(",")}`)
+  record("nudge-accepted", held.nudges.some((nudge) => nudge.path === MEMORIES.helm.path), `held=${JSON.stringify(held)}`)
+
+  // The next turn drains the held nudge into the parent transcript.
+  await prompt(session, MEMORIES.rollout.prompt)
+  const entries = readEntries(state.sessionFile)
+  record("nudge-reached-parent", nudgedPaths(entries).includes(MEMORIES.helm.path) && entries.filter(isRecall).some((entry) => (entry.content ?? "").includes(MEMORIES.helm.body)), `paths=${nudgedPaths(entries).join(",")} recallMessages=${entries.filter(isRecall).length}`)
+  facts.result = {
+    resident: sidecarDirs(identity).length === 1,
+    childSessions: sidecarDirs(identity).length,
+    queryExpansion: true,
+    memoryParameters,
+    candidates,
+    nudged: nudgedPaths(entries).length,
+    nudgedPaths: nudgedPaths(entries),
+    sidecarRequests: router.state.sidecar,
+    parentRequests: parentTurns(),
+  }
+}
+
+const RUNNERS = { happy: runHappy, "provider-429": runProvider429, "context-reseed": runContextReseed, "category-unavailable": runCategoryUnavailable, "refused-pinned-model": runRefusedPinnedModel, "cjk-auto": runCjkAuto, "query-expansion": runQueryExpansion }
 
 // ---- main --------------------------------------------------------------------------------------------------------
 

@@ -174,7 +174,7 @@ describe("TaskManager.start", () => {
     expect(result.kind).toBe("start_failed")
     if (result.kind !== "start_failed") throw new Error("expected start_failed")
     expect(store.load(result.task_id)?.status).toBe("error")
-    const jsonl = readFileSync(join(project, ".omo", "senpi-task", "logs", `${result.task_id}.jsonl`), "utf8")
+    const jsonl = readFileSync(join(store.stateDir, "logs", `${result.task_id}.jsonl`), "utf8")
     expect(jsonl).toContain("error")
 
     // and the slot drained: a healthy runner can now start

@@ -185,6 +185,10 @@ export function composeOmoSenpiExtension(
         logger.error("omo-senpi component registration failed", { component: component.name, error })
       }
     }
+    // The wrapper exists only to collect omo component tools. Senpi loads builtin factories after
+    // path extensions, so leaving it installed would capture raw builtin definitions (including
+    // freeform eval) and inject them as parent custom tools into every in-process child.
+    captureRegistry.stopCapture()
   }
 }
 

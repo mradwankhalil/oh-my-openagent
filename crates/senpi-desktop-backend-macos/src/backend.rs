@@ -5,7 +5,7 @@ use image::RgbaImage;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use senpi_desktop_core::ax::AxBackend;
 use senpi_desktop_core::backend::{Backend, DeliveryMode, PointerEvent};
-use senpi_desktop_core::error::{CoreResult, DesktopError};
+use senpi_desktop_core::error::{CoreResult, DesktopError, TccPermission};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{
@@ -16,6 +16,9 @@ use senpi_desktop_core::types::{
 use crate::ax::{is_trusted, MacAx};
 use crate::capture::{MacCapture, Screencapture};
 use crate::input::{CanaryMode, CanaryResult, MacInput, CANARY_STOP_REASON};
+
+#[path = "permissions.rs"]
+pub(crate) mod permissions;
 
 pub struct MacosBackend {
     capture: MacCapture,
@@ -95,14 +98,16 @@ impl MacosBackend {
         if is_trusted() {
             Ok(())
         } else {
-            Err(DesktopError::permission_denied(
-                "macOS Accessibility permission is required for native input",
-            ))
+            Err(permissions::permission_denied(TccPermission::Accessibility))
         }
     }
 }
 
 impl Backend for MacosBackend {
+    fn permission_denied(&mut self, permission: TccPermission) -> DesktopError {
+        permissions::permission_denied(permission)
+    }
+
     fn capabilities(&mut self) -> DesktopCapabilities {
         MacosBackend::capabilities(self)
     }

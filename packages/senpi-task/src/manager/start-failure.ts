@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+
 import { RunnerError } from "../runners/in-process/runner-error"
 import {
   HOST_START_FAILURE_REASONS,
@@ -30,6 +32,8 @@ const REASON_MESSAGES: Readonly<Partial<Record<TaskStartFailureReason, string>>>
     "The recorded task host is incompatible; the child was not opened anywhere else (host_incompatible).",
   open_timed_out:
     "The task host did not finish opening the child session in time (open_timed_out).",
+  launch_spec_insecure:
+    "The task host launch spec is writable by other users or not owned by you, so no task host was started (launch_spec_insecure).",
 }
 
 const SESSION_REFUSAL_REASONS = new Set<TaskStartFailureReason>(SESSION_START_FAILURE_REASONS)
@@ -46,8 +50,9 @@ export function describeStartFailure(error: unknown): StartFailureDescription {
   if (!RunnerError.is(error)) return { errorMessage: GENERIC_START_FAILURE_MESSAGE }
   const failureKind = error.failure.kind
   const reason = isTaskStartFailureReason(error.failure.reason) ? error.failure.reason : undefined
-  const errorMessage = publicMessage(failureKind, reason)
-  const { rejected_while: rejectedWhile, exit } = error.failure
+  const { rejected_while: rejectedWhile, exit, launch_spec_path: specPath } = error.failure
+  const namedSpec = reason === "launch_spec_insecure" && specPath !== undefined ? homeRelative(specPath) : undefined
+  const errorMessage = namedSpec === undefined ? publicMessage(failureKind, reason) : launchSpecInsecureMessage(namedSpec)
   return {
     errorMessage,
     failureKind,
@@ -55,12 +60,22 @@ export function describeStartFailure(error: unknown): StartFailureDescription {
     eventFacts: {
       failure_kind: failureKind,
       ...(reason === undefined ? {} : { failure_reason: reason }),
+      ...(namedSpec === undefined ? {} : { launch_spec_path: namedSpec }),
       ...(rejectedWhile === undefined ? {} : { rejected_while: rejectedWhile }),
       ...(exit === undefined
         ? {}
         : { exit_kind: exit.kind, exit_code: exit.code, exit_signal: exit.signal }),
     },
   }
+}
+
+function homeRelative(path: string): string {
+  const home = homedir()
+  return home !== "" && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path
+}
+
+function launchSpecInsecureMessage(path: string): string {
+  return `The task host launch spec is writable by other users or not owned by you, so no task host was started (launch_spec_insecure: ${path}). Fix: run chmod 644 ${path} and make sure the file is yours.`
 }
 
 function publicMessage(

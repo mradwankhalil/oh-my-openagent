@@ -273,8 +273,8 @@ describe("acquireDesktopEngine", () => {
 		expect(result.diagnostic).toMatchObject({
 			code: "native-unavailable",
 			host: musl,
-			message: `No senpi-desktop-engine binary is available for ${musl}.`,
-			cause: `No desktop engine release asset exists for ${musl}.`,
+			message: `No senpi-desktop-engine is built for ${musl}; computer use is unavailable on this host.`,
+			reason: "no-release-asset",
 		});
 		expect(result.diagnostic.attemptedPaths).toContain(join(packageDir, "native", "prebuilds", musl, "senpi-desktop-engine"));
 		expect(existsSync(join(cacheDir, version, musl))).toBe(false);

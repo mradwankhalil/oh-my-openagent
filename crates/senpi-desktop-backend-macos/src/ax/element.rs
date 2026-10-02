@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFArray, CFBoolean, CFRetained, CFString, CFType, CGPoint, CGSize};
 use senpi_desktop_core::ax::{AxBounds, AxHandle};
-use senpi_desktop_core::error::{CoreResult, DesktopError};
+use senpi_desktop_core::error::{CoreResult, DesktopError, TccPermission};
 
 const AX_TIMEOUT_SECONDS: f32 = 2.0;
 
@@ -44,9 +44,7 @@ pub(super) fn ensure_trusted() -> CoreResult<()> {
     if is_trusted() {
         Ok(())
     } else {
-        Err(DesktopError::permission_denied(
-            "macOS Accessibility permission is not granted for this process",
-        ))
+        Err(crate::backend::permissions::permission_denied(TccPermission::Accessibility))
     }
 }
 

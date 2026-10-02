@@ -1,3 +1,282 @@
+## 2026-10-02 - In-process task children run session_shutdown before they are disposed (#9413)
+
+Since #9343, an in-process task child loads the engine's builtin extensions, codemode included. `packages/senpi-task/src/runners/in-process/child-handle.ts` tore the child down with a bare `session.dispose()`, on both the handle's `dispose()` and `discardUnstartedChildSession()`. That never emits `session_shutdown` (only the engine's `AgentSessionRuntime` does), and codemode closes its per-session bridge HTTP server only on `session_shutdown`. So every in-process child left a listening loopback server and a keep-alive socket behind, and `omo -p` never exited after it delegated a task.
+
+Both teardown paths now go through `shutDownChildSession`: it emits `session_shutdown` (`reason: "quit"`) through the session's own extension runner when the session has handlers for it, then disposes the session in a `finally`. The runner applies the host's per-handler shutdown budget (`sessionShutdownHandlerTimeoutMs`), so a handler that hangs cannot hold teardown. `ChildSession` gains an optional `extensionRunner` (fakes that load no extensions leave it out), the handle's `dispose()` returns a promise, and the manager's in-process adapter awaits it. When handle construction fails and shutting the discarded session down also fails, both errors are kept in an `AggregateError`.
+
+`child-shutdown.integration.test.ts` runs real children with the builtin extensions against a local fake provider. It covers the three acceptance criteria in #9413, plus one budget case: disposing a child closes its codemode bridge; a print run that delegates to a child that succeeds, and one that fails, both exit 0 within the bound; a child discarded before its handle started is shut down the same way; and a hung `session_shutdown` handler is aborted at the budget while the session is still disposed. All five fail on `dev` and pass with this change.
+
+## 2026-10-01 - Adopt senpi 2026.10.1-3
+
+Every `@code-yeongyu/senpi` pin moves from 2026.10.1-2 to 2026.10.1-3: the root devDependency, `omo-native`, the `omo-senpi` and `senpi-task` peer and dev pins (with their `senpi-tui` and `senpi-ai` aliases), the pin tests and the engine named in `senpi-task`'s coverage test. The engine carries the three desktop permission fixes (senpi#2511, #2512, #2513), event-driven Python readiness for cold Windows starts, and the tool-search, thinking-format and Claude-subscription fixes listed in CHANGELOG.
+
+## 2026-10-01 - A PR's Windows and macOS legs never report green without running their tests (#9245)
+
+On a pull request the Windows and macOS legs of `test`, `codex-compatibility` and `senpi-compatibility` skipped every install and test step unless a changed path looked platform-sensitive or the PR carried `ci:full-matrix`, and the job still concluded success, because GitHub counts a step skipped by its `if` as passing. That let #7676, #9329 and #9243 merge with green Windows checks and turn `dev` red. Two changes close it. `script/ci-fast-path.mjs` now marks a change runtime-touching unless every changed path matches an explicit allowlist of web, prose (top-level Markdown, README/CHANGELOG/AGENTS-style docs outside `packages/*/src`) and repository metadata (other workflows, issue templates, `.github/assets`); anything else, including a new folder or an unknown extension, counts as runtime, and a runtime-touching PR runs every OS leg by itself, with no label and no write token, so fork PRs get it too. Each OS leg also ends with a guard step, `script/ci-leg-tests-guard.mjs`, that always runs and reads the real outcomes of that leg's test steps: if they were all skipped while the change needed them, the check fails with `tests not run: add ci:full-matrix`; if the skip was intended (a docs or metadata change), the leg passes with a `tests intentionally not run` notice and says so in its job summary. The `dev` push still runs the full matrix.
+
+## 2026-10-01 - The copy-tree self-destination test uses the OS temp dir on Windows
+
+`packages/isolation-core/src/backends/copy-tree.test.ts` built its scratch root from `process.env.TMPDIR ?? "/tmp"`, a POSIX-only fallback. Windows runners do not set `TMPDIR`, so the path became `\tmp\self-copy-XXXXXX` and `mkdtemp` failed with `ENOENT`, which turned the required `test (windows-latest, 2/2)` job red on `dev` after #9388 changed which files share that shard's workers. The test passed before only when an earlier test in the same worker had left `TMPDIR` set. It now uses `os.tmpdir()`, which resolves on every platform. Test-only; no product change. The worker env leak that made it pass is tracked separately.
+
+## 2026-10-01 - A Bun crash in the Windows rpc-host tests is contained and retried once (#9219)
+
+Bun 1.4.2 intermittently segfaults a Windows test worker while it runs `packages/senpi-task/src/runners/rpc-host`, and 1.4.3-canary.1 still does (oven-sh/bun#44390). Each crash turned the required `test (windows-latest, 2/2)` job red. That job now runs the rpc-host suite in its own `bun test --parallel` invocation, between the serial quarantine and the remainder, through `script/bun-panic-retry.ts`: when the output carries Bun's crash markers (`Bun has crashed`, `worker crashed: exit code 3`) and nothing else failed, the invocation runs once more and the crash lines are logged as a warning annotation. A second crash fails the job. A real test failure (a `(fail)` line, an unhandled error, or more failures than crashed workers) is never retried, even when the same run also crashed. The suite stays in the required job with no `continue-on-error`. The Windows remainder reads the new `bunfig.win2.parallel.windows.toml`, which adds the directory to `bunfig.win2.parallel.toml`'s ignores so no file runs twice, and the flake soak's `full-shard-2` target follows the same shape without the retry. `script/bun-panic-retry.test.ts` drives the runner against a scripted fake `bun test` and proves that one crash is retried once, a second crash fails, and an assertion failure is not retried.
+
+## 2026-10-01 - Builtin category chains only name thinking levels their models accept (#9378)
+
+Reported by @markshikada, whose byte-compare of 5.1.6 against 5.1.7 and reflection timeline pinned it down. Five Senpi builtin category rungs named a thinking level senpi's model catalog rejects for that model, so every child session start logged a `validation_warning` to `fallback.log` (hundreds of lines in a live session) and the engine then silently clamped the rung to `high`. The entries were never skipped: they ran, just not at the declared level. In `packages/senpi-task/src/category/fallback-chains.ts`, the `quick` lane's opencode-go `minimax-m3` and `minimax-m2.7` rungs now carry no variant, so they run at the `quick` lane's own `low` instead of a clamped `high`. `unspecified-low`'s `mimo-v2.6-pro`, `qwen3.8-max-preview` and `mimo-v2.5-pro` say `high`, the level they already ran at, so their runtime behavior is unchanged and the warning stops. A level the user sets in `omo.json` is untouched: it still warns once, naming the level and the model, and still runs at a level the model accepts. The OpenCode edition's table in `model-core` keeps `max`, because OpenCode derives its own variants. The regression drives a real senpi session over the real model catalog. On the pre-fix chains, the `quick` child started at `high` instead of `low`, and two loads per category on an opencode-go plus xiaomi machine logged four warnings; after the fix it logs none.
+
+## 2026-10-01 - The fake clock no longer calls the deprecated `AtomicU64::fetch_update` (#9383)
+
+Rust 1.99 deprecates `fetch_update` in favour of `try_update`, and `rust-toolchain.toml` follows `stable`, so the desktop engine workflow's `clippy -D warnings` failed on every pull request at `crates/senpi-desktop-backend-fake/src/clock.rs`. `FakeClock::advance` now uses an explicit `compare_exchange_weak` loop with the same saturating result, which compiles without deprecation on older and current stable alike. The existing saturation tests in `tests/scenario.rs` cover it.
+
+`rust-toolchain.toml` now pins `channel = "1.99.0"` instead of `stable`, which every Rust workflow reads, so a new stable release can no longer change the lints that every pull request is checked against. Toolchain upgrades now come as their own pull request, with clippy run on the new version.
+
+## 2026-10-01 - Preserve Windows killed-task classification across repeated Bun advisories (#9228)
+
+Windows RPC exits now accept any positive number of Bun's known child-reaper startup advisory lines as advisory-only stderr. An empty stderr remains an external termination, while any other stderr line still proves a crash. This preserves `status: error` with `killed: true` for externally terminated code-1/no-signal children without weakening crash diagnostics.
+
+## 2026-10-01 - Adopt senpi 2026.10.1-2
+
+Every `@code-yeongyu/senpi` pin moves from 2026.9.30 to 2026.10.1-2: the root devDependency, `omo-native`, the `omo-senpi`
+and `senpi-task` peer and dev pins (with their `@earendil-works/pi-tui` -> `@code-yeongyu/senpi-tui` aliases), the pin
+tests, `provider-map.json` and the engine named in `senpi-task`'s category coverage test. The engine carries the upstream
+v0.99.1 sync, so `provider-map.json` gains the new builtin providers `meta` (OAuth login) and `typesafe`, and the
+`senpi-task` runners follow the upstream disposition and `TranscriptContext` API. It also brings the compiled-engine
+`bun` phantom-turn fix (#9362, senpi#2494) and per-session permission presets (senpi#2461).
+
+
+## 2026-10-01 - Repeat macOS permission denials name the earlier pane (omo-desktop-app#1437)
+
+macOS permission guidance now says the privacy pane has been opened only when the current denial opened it. Repeat denials refer to the pane opened earlier, or tell the user to open it when the initial attempt failed, while retaining the turn-on and fully quit/relaunch instructions and the responsible-process TCC identity.
+
+
+## 2026-10-01 - Keep child tool parity stable on Windows (#9274, #6709)
+
+The builtin tool parity regression now compares the in-process child loader directly with the `DefaultResourceLoader` policy used by process children instead of paying for two full Windows CLI cold starts. Both loaders expose the same platform-specific builtin registrations, including `web_search`; the existing policy tests continue to cover the shared parent and session-default tools that complete the child surface.
+
+## 2026-09-30 - In-process task children receive senpi builtin tools (#9274, #6709)
+
+The default in-process task runner now loads and binds senpi's builtin extensions without loading any parent, user or project extension paths. Its child tool payload matches process mode for the same category policy, including `web_search`, while existing allow/deny rules and the parent-only workflow, team and ask-user surfaces remain intact. The regression drives both runners through a deterministic local provider; it recorded 11 tools in-process versus 27 in process mode before the fix and 27 in both modes after it.
+
+## 2026-10-01 - The curl installer hands pipes from sh to Bash (#9325)
+
+`install.sh` keeps its Bash implementation, but its first block now parses as POSIX sh. When a user pipes the script to `sh` or `dash`, that block writes the Bash body from a quoted here-document to a private temp file and runs it with Bash, preserving arguments and the exit status. Sourcing the script from Bash, as the other-install tests do, still only defines the installer functions. If Bash is unavailable, it exits before any Bash syntax is parsed and prints the single command that uses Bash explicitly. Direct `| bash` installs are unchanged. Tests run the preamble through `sh` and `dash`, prove the complete buffered body and arguments reach Bash, and retain a direct Bash syntax check.
+
+## 2026-10-01 - deep-high and Geeky · Heavy on GPT-6 Astra high, Geeky · Normal on GPT-6.1 Sol Fast medium (#9372)
+
+The owner set new GPT lane defaults. `packages/model-core/src/category-model-requirements.ts` and the OpenCode builtin in `packages/omo-opencode/src/tools/delegate-task/openai-categories.ts` run `deep-high` on `gpt-6-astra` at `high` instead of `xhigh`, matching the Senpi chain in `packages/senpi-task` (see its changes.md). deep-high stays a single Astra rung with no Sol fallback, the 2026-09-20 rule that the deep lanes never substitute each other. `deep-low` already led with plain `gpt-6.1-sol` medium (#9214) and is unchanged. The model-profile change is in `packages/omo-senpi/changes.md`. The docs (`docs/guide/*`, `docs/reference/*`, `docs/examples/*.jsonc`) and the model-core and OpenCode tests that pinned `xhigh` for deep-high now show `high`.
+
+## 2026-10-01 - The macOS tcc-diagnostic QA scenario reads the responsible-process message (#9368)
+
+#9351 changed the permission-denied message to `TCC identity: responsible=<path>[ bundle=<id>], pid=<n>` (or `unresolved (engine executable=...)`), but `script/qa/desktop/macos/tcc.ts` still looked for the old `executable=` text, so the scenario could never pass. Its judgment now lives in `tccIdentityPasses`, which passes only when the denial names the engine itself (compared by real path) as the responsible process, and fails for another responsible process, an unresolved one, or a message with no identity. Five behavior tests cover those cases; with the old parser the two passing cases fail.
+
+## 2026-10-01 - Windows explicit engine paths must name a .exe, and the exec-bit check stays POSIX-only (#9359)
+
+On Windows, `fs.access(..., X_OK)` only proves a file exists: the platform has no exec bit. The parity test's chmod-0644 "not executable" case was therefore accepted on Windows runners, and doctor went on to spawn it. Status and doctor share `explicitPathDiagnostic`, which now refuses a win32 explicit `engine_path` that does not end in `.exe` (the name the locator and the release asset use) with `not executable (expected a .exe file)`. POSIX keeps the X_OK check. The parity test runs the mode-bit case only on hosts that have mode bits and adds a Windows case that runs on every host, with an executable fixture so only the Windows rule can refuse it.
+
+## 2026-09-30 - The recommended installer offers to remove a second omo install (#9324)
+
+After installing the standalone launcher, `install.sh` now verifies other `omo` entries on PATH against their package manifest or the previous standalone receipt. A terminal run asks `Remove the other omo install at <path>? [y/N]`; `--remove-other-installs` gives non-interactive runs an explicit opt-in, while piped and CI runs otherwise delete nothing and print the exact command. Removal is scoped to the verified global package and shim or the one receipt-owned launcher, and a failure leaves the new launcher working with remediation text. `omo doctor` now formats the non-active install's command with its detected Bun root, npm prefix, or quoted standalone path. The installer-channel behavior change is covered in throwaway HOME/prefix fixtures for acceptance, decline, failed-removal and look-alike safety cases.
+
+## 2026-10-01 - Validate computer-use status sources and passively report permissions (#9349)
+
+Status and doctor share installed-engine source selection and explicit-path validation.
+Missing, non-executable and quarantined overrides are no longer reported as found,
+and status retains the location after startup or failure. Before activation, status
+uses the existing bounded hello/capabilities probe on an installed engine: no
+acquisition, session opening, stop listener, input or permission prompt. Absent
+engines and failed probes report unknown permissions rather than claiming a grant.
+The probe deadline resolves independently of inherited pipe EOF and terminates
+the engine process tree, so a silent wrapper cannot leave status or doctor hanging.
+
+## 2026-10-01 - Preserve unsupported computer-use host diagnostics after first use (#9348)
+
+`/computer status` retains the installed-engine diagnostic after activation fails as
+native-unavailable. Unsupported linux-arm64 and win32-arm64 hosts continue naming
+the missing release build instead of losing the explanation after first use.
+Component regressions exercise the real activation failure and confirm status
+does not start another child or acquire an engine.
+
+## 2026-10-01 - the stop-path failure and permission-denied data types describe what they carry (#9338)
+
+Two type comments copied during the computer-use permission work described the wrong data. `StopPathFailure` (`crates/senpi-desktop-safety/src/supervisor.rs`) now says it records why the global stop-chord listener failed to start, which the gate uses to turn an Accessibility miss into a permission error instead of a missing stop path. `PermissionDeniedData` (`packages/senpi-desktop-protocol/src/json-rpc.ts`) now says it carries the missing macOS permission, the Settings pane that grants it, the app to enable and whether that app must be relaunched. These are comment-only changes; the generated extension bundles were refreshed because they embed the protocol package's doc comment.
+
+## 2026-10-01 - Permission errors name the macOS TCC responsible process (#9345)
+
+Screen Recording and Accessibility denial diagnostics resolve the responsible process with the
+macOS responsibility API and report its executable path, optional application bundle identifier,
+and pid. Shell-launched engines report themselves; application-launched engines report the
+responsible application. Failed resolution is explicitly unresolved and labels the engine path
+only as diagnostic context, never as a guessed TCC identity.
+
+## 2026-10-01 - ultrawork reuses evidence per target, spawns a new reviewer per round, and scopes defects to the blast radius (#9294)
+
+The directive's Constraints bullet ("own every defect met mid-run ... never deferred as a follow-up", from #7674)
+contradicted the engine's base prompt (a pre-existing bug is a follow-up) and the project's delivery rule (only defects
+inside the blast radius belong to this run), and the Codex variant still said "No drive-by refactors"; gate step 4 sent
+fixes back to the SAME reviewer while `review-work` and `ulw-execute` require a fresh one; "re-run the scenarios that
+increment could have affected" had no definition; and the rerun rule was stated three times. `SKILL.md`, `codex.md`,
+`default.md` (gate step only), the `ulw-loop` `add_subgoal` row and the `ulw-execute` discovered-work sentence now
+carry one scope rule (blast radius: request not delivered, regression this change introduces, invalid proof, failing test
+or stale doc of touched code; anything else becomes a tracked issue named in the final message), one rerun rule (evidence
+valid per target with commit and coverage recorded; rerun touched-file tests plus importers, their scenarios, and moved
+dependencies; one full pass before the final message) and a NEW reviewer per re-review (delta diff, cited blockers, at
+most twice). The memory line asks for every regression a check caught and each QA scenario with its invocation. No TDD
+wording returns. Generated copies (`generated-directive.ts`, `directive-content.ts`, `ulw-loop/directive.md`,
+`plugin/extensions/omo.js`) regenerated; `embed-directive.mjs --check` went RED on the edit and GREEN after regen, and
+`ultrawork-arming.test.ts` (packaged extension injects the directive) is the seam that fails on a stale bundle.
+
+## 2026-09-30 - Localized Windows tar month tokens parse during archive entry validation (#9289)
+
+Windows `tar -tvf` output can localize the month column or emit replacement characters when decoded. The tar listing parser now accepts any non-whitespace month token instead of only ASCII word characters, while malformed lines still fail closed and entry path validation remains unchanged. Regression coverage includes ASCII, Cyrillic, replacement-character, and malformed month/listing cases. Thanks @willowite for the report, reproduction, fix, and cases.
+
+## 2026-09-30 - Verify quarantined desktop-engine sidecars inside the launcher install (#9283)
+
+The locator accepts a quarantined executable sidecar only when its canonical path stays inside the
+launcher's native/prebuilds directory and its SHA-256 matches the as-shipped checksum file there.
+Missing, invalid or duplicate checksum entries, digest mismatches and escaping symlinks retain the
+quarantine refusal. Other candidate sources and explicit engine paths remain refused. Release
+acquisition and installed-sidecar verification share the existing checksum grammar; cache paths are
+unchanged.
+
+## 2026-09-30 - Adopt senpi 2026.9.30
+
+Every `@code-yeongyu/senpi` pin moves from 2026.9.29-5 to 2026.9.30: the root devDependency, `omo-native`, the `omo-senpi`
+and `senpi-task` peer and dev pins (with their `@earendil-works/pi-tui` -> `@code-yeongyu/senpi-tui` aliases), the pin
+tests, the version comment in `provider-map.json` and the engine named in `senpi-task`'s category coverage test. The
+engine brings the ask-user resume crash fix (#9268), the `accept-edits` permission preset (senpi#2430), the chat prompt
+surface (senpi#2398) and the terminal control-endpoint answer fix the session gateway needs (senpi#2407).
+
+## 2026-09-30 - Keep signed macOS computer-use engines at one path across updates (#9282)
+
+Signed release engines now launch from `~/.omo/engines/senpi-desktop-engine/<host>/senpi-desktop-engine`,
+so the absolute-path part of a macOS Accessibility or Screen Recording grant does not change on update.
+Every service spawn reacquires its requested release and holds a process-safe exclusive lock through
+atomic replacement, SHA-256 verification and native spawn. Concurrent sessions cannot replace the image
+between another session's verification and spawn. Doctor uses the same transaction and reports that path.
+Explicit overrides, sidecars, development engines, unsigned builds and quarantine diagnostics retain their
+existing behavior; unsigned files never replace the permission-bearing release engine. Other platforms
+retain immutable release generations.
+
+## 2026-09-30 - Computer-use status and doctor report installed sources and unsupported hosts (#9286)
+
+`/computer status` describes the located engine or verified release cache without starting it, or names the release asset that first use would download. Headless print mode emits the same status on stderr instead of losing the UI notification. Doctor now probes verified cached engines without fetching and reports the same source location as status, with a separate launched-executable field when signed launch uses a stable path. Empty unsupported hosts report that no engine is built instead of suggesting a download. The cache scan retains its existing layout, digest, quarantine and executable checks, including attempted paths when a cache read fails. The computer tool and guide require current-session capabilities before an availability claim.
+
+## 2026-09-30 - macOS permission denials identify the app and preserve their cause (#9284)
+
+A failed Accessibility stop listener now stays a permission denial through the supervisor, session,
+engine RPC and computer tool, including the default-policy path where only the host relay is live.
+Input remains refused; suspension and heartbeat precedence and the relay-only opt-in are preserved.
+Denied macOS actions open each permission's Settings pane once per engine process and return the
+launching app, pane URL and relaunch requirement. Capture remains independent of Accessibility.
+
+## 2026-09-30 - The standalone binary gate starts the binary from an empty download folder and runs a Windows leg (#7485)
+
+`native-binary-parity` (#9259) ran the binary where `build-omo-binary.ts` wrote it, and only on macOS, so the Windows
+release exe dying in its download folder (#7485, fixed by #9255) could not fail it. `script/qa/omo-native-parity-smoke.mjs`
+now copies the binary alone into an empty `download/` folder inside its sandbox before every binary run, on every leg.
+`--npm-omo` became optional: without it the script runs the binary session twice in the same sandbox (the first run
+provisions `~/.omo/binary-runtime/<version>/`, the second reuses it) and fails unless the `eval-js` and `pty-bash` steps
+succeed with no extension load failure (`binaryOnlyFailures` in `omo-native-parity-compare.mjs`). The job is now a
+matrix: `macos-15` keeps the binary/npm comparison, `windows-latest` builds the `x86_64-pc-windows-msvc` desktop
+engine and the windows-x64 binary and runs the binary-only pair. Windows has no `ps e`, so the sandbox reaper there
+lists processes whose executable or command line sits under the sandbox through `Win32_Process`. This replaces the
+standalone `windows-standalone-binary.yml` from #9260, so there is one binary gate, not two.
+
+## 2026-09-30 - CI compares the standalone binary with the npm launcher (#9248 class)
+
+Every packaging check the binary build runs is self-referential. `build-omo-binary.ts` compares Bun's embedded files
+with the staged files (`collectStagedFiles`), and `resolveExpectedSidecarRelPaths` derives its expected set from the
+same `engineSidecarSources()` list that stages them, so a runtime dependency the list never names (codemode's
+`@babel/parser`, #9248) passes every check. The release smoke only runs `--version`. The new `native-binary-parity` CI
+job (macos-15, heavy mode) builds the darwin-arm64 binary and the omo-ai launcher from the same commit and runs
+`script/qa/omo-native-parity-smoke.mjs`: both drive one scripted session in isolated sandboxes (eval JS and Python,
+grep, a pty command, tool search, webfetch against a local page, text and image reads, LSP diagnostics, apply_patch,
+memory, task) against a scripted provider (`omo-native-parity-provider.mjs`), then `omo doctor` and
+`omo setup --dry-run`. `omo-native-parity-compare.mjs` fails on any registered-tool, step-result, doctor-section or
+setup-line difference and on any extension load failure; the lines that differ by distribution (engine resolution,
+edition line, embedded vs downloaded desktop engine) are listed with the reason in `DOCTOR_EXPECTED_ONLY`. The driver
+stops every process its sandboxes started (found by the sandbox path in their environment) before removing them.
+
+## 2026-09-30 - The /docs/<slug> guide pages render on omo.dev instead of returning 404 (DESKTOP-62 follow-up)
+
+After #9261 deployed, every `/docs/<slug>` guide page answered 404 on omo.dev (`x-nextjs-prerender: 1`, `x-nextjs-cache: MISS`) while `next start` served them. The route exported `dynamicParams = false`; the Cloudflare Worker's incremental cache holds no prerendered entries, so each request was a cache miss and a closed route refuses to render on a miss. `app/[locale]/docs/[slug]/page.tsx` drops the export, like every other prerendered route in the site (`/manifesto` renders the same way); an unknown slug still ends in `notFound()`.
+
+## 2026-09-30 - omo.dev guide pages for the OmO Desktop help links: workflows, agents, keywords, telemetry, desktop updates (DESKTOP-62)
+
+OmO Desktop's "Learn more" buttons and its telemetry and update links opened raw markdown in this repository or a private releases page, because omo.dev had no page to send them to. `docs/guide/` gains five user-facing pages written for someone who has never read the code: `workflows.md` (what `mass ulw` does and how to follow a run), `agents.md` (delegation and the Agents panel), `keywords.md` (the engine's keyword list, mirrored from `packages/omo-senpi/src/components/ultrawork/index.ts` and `skill-pointers/index.ts`, including the `mulw` / `ulw mass` / `meth` aliases and the rule that code spans and fences are ignored), `telemetry.md` (a plain summary of `docs/reference/senpi-telemetry.md` with the `telemetry.enabled` and environment opt-outs) and `desktop-updates.md` (update flow, release notes, the Stable and Nightly tracks). `packages/web/lib/docs-sections-data.mjs` lists them as `DOC_GUIDE_PAGES_DATA`, so the generator compiles them and rewrites links between them to their routes; the new `app/[locale]/docs/[slug]/page.tsx` serves each one at `/docs/<slug>` with its own title, description and section sidebar, using `splitDocSections` (the widget-free half of `splitDocPage`), and the sitemap lists them. `docs-page.test.ts` checks every guide page splits into a titled lead with unique sections and that cross-page links resolve to site routes; `e2e/docs.spec.ts` opens each route.
+
+## 2026-09-30 - Memory recall reads the memory repo with one git cat-file batch and re-reads only changed blobs (#9251)
+
+`packages/memory-core/src/recall/provider.ts` loaded the recall corpus with one `git show <rev>:<path>` process per memory file, and `RecallCorpusCache` threw every parsed document away whenever HEAD moved. A memory repo with 2,159 recall files and about 17 auto-commits an hour made every live session spawn about 2,160 git processes per commit; with ~40 sessions and RPC hosts on one machine a 25 s sample caught 2,118 distinct `git show` processes (~85/s) at load 220-290, and the exited children waiting to be reaped showed up as a steady population of `<defunct>` git under the RPC hosts. A load is now `ls-tree -r` (new `GitMemoryRepo.lsTreeBlobs`, which keeps each blob id) plus at most one `git cat-file --batch` (new `GitMemoryRepo.readBlobs`, parsed from the raw stdout bytes the exec now also returns, so multibyte UTF-8 splits on byte offsets). The cache keeps the parsed document per path and blob id, so a HEAD move reads only the blobs whose id changed, reuses the unchanged document objects (the haystack, bm25 and CJK memos stay warm), drops deleted files, and reads nothing when the move touched no recall file. The tree and batch parsers live in `git/repo-tree.ts`. Every git child is still awaited on `close` on every path.
+
+RED on dev (the old provider under the new `provider-git-budget.test.ts`): a 40-file load ran `show` once per file, and the one-edit-one-delete HEAD move and the system-only HEAD move each re-read the whole tree (41 extra `show` runs). GREEN: 3/3 in that file. With 200 files and 10 HEAD moves each load ran exactly 3 git processes (`rev-parse`, `ls-tree`, `cat-file`) and the test process had 0 zombie children.
+
+## 2026-09-30 - Config pruning keeps valid siblings across unsafe keys, model aliases and legacy maxTokens (refs #7676)
+
+The per-leaf pruning added by #7676 had three follow-up gaps. First, `constructor`, `prototype` and `__proto__` inside an otherwise valid config could bypass layer validation: `constructor` was then read through an inherited Zod shape member and crashed `unknown-key-diagnostics.ts`, while the other unsafe keys could survive or silently disappear. `layer-validation.ts` now rebuilds every parsed layer from safe own entries, reports each unsafe path through the existing `unknown-keys` diagnostic, and preserves valid siblings; the OpenCode schema walker also reads only shape-owned members. Second, `omo-config-chain.ts` parsed all model-reference input at once, so one invalid OpenCode leaf made it skip every model alias. It now prunes invalid model-input paths before `resolveModelReferences`, while the normal plugin-view warning still names the dropped leaf. Third, legacy `maxTokens` normalization moved even a wrong-typed value to `max_tokens`; the pruner could not find that normalized path in the raw document and removed the whole category. Invalid `maxTokens` now stays at its original path until validation removes only that field, while valid numeric values still normalize to `max_tokens`.
+
+RED on current dev: the focused pipeline run produced four failures: the unsafe-key fixture lost the valid agent, the direct schema walker threw at `schema._zod.def`, the valid alias remained `alias`, and the valid category disappeared. GREEN after the fixes: all 10 focused tests pass, including the three real `validatePluginConfig` scenarios and the direct inherited-shape guard.
+
+## 2026-09-30 - Post-edit LSP install nudges skip files outside a project and repeat at most once per server (#9223)
+
+`@oh-my-opencode/lsp-core/post-edit` passed the daemon's not-installed guidance through for every edited file and every edit: a write to the agent's own config or a scratch temp file got "To install in THIS repository" plus "ACTION REQUIRED — ASK THE USER", which would create a `package.json` in HOME or a temp dir, and a harness without an install-decision tool saw it again on every edit. The diagnostics runner can now return a structured `not_installed` outcome, and `collectPostEditDiagnostics` takes an optional `locateFile` (`post-edit/file-location.ts` `classifyPostEditFileLocation`). An undecided nudge is skipped when the file has no project root (no `WORKSPACE_MARKERS` ancestor, the marker set the out-of-cwd workspace resolver uses), sits in the agent config dir, or sits in the canonical OS temp dir or `/tmp` without its own marked project below the temp root. Without a decision tool a server is nudged once per session cache (`notInstalledServers`, cleared with the not-configured cache). Recorded `declined`/`allowed` decisions and project-root files keep today's text, and `missing-dependency-result.ts` now reports the recorded `decision` in the not-installed availability. Direct `lsp_diagnostics` calls are unchanged. The Codex LSP component builds its per-session post-edit cache with an empty `notInstalledServers` set (`omo-codex/plugin/components/lsp/src/lsp-session-state.ts`); Codex has a decision tool and reports only `not_configured` structurally, so its behavior is unchanged.
+
+RED on dev: the omo-senpi adapter test got the full ASK THE USER nudge for an agent-config file and a no-project scratch file. GREEN: `packages/lsp-core/src/post-edit/not-installed.test.ts` (14 cases) and `missing-dependency-result.test.ts`.
+
+## 2026-09-30 - Adopt senpi 2026.9.29-5: GPT-6.1 Sol in the engine catalog, the OpenAI provider default, the GPT-6 prompt, and four engine fixes (#9214)
+
+Every senpi pin moves from 2026.9.29-4 to 2026.9.29-5 (root devDependency, `omo-native`, the `omo-senpi` and `senpi-task` peer and dev pins including the `@earendil-works/pi-tui` aliases, their pin tests, the version comment in `provider-map.json`, and the engine named in `senpi-task`'s category coverage test). `bun.lock` moves the seven `@code-yeongyu/senpi*` entries. `packages/omo-senpi/plugin/extensions/omo.js` changes only in its embedded provider-map copy (the version comment and the digest); `build-extension.mjs --check` reports the build current. The routing change in this branch (deep-low and Geeky · Normal on `gpt-6.1-sol`) needs this engine, which is the first to carry the `gpt-6.1-sol` and `gpt-6.1-sol-fast` catalog rows on the OpenAI and ChatGPT-subscription lanes (senpi #2390, #2393, #2396).
+
+## 2026-09-30 - Kibitzer's recall sidecar starts on a connected model when the quick pin names only unconnected providers (#9216)
+
+`resolveKibitzerSidecarModel` took the category resolution as is, and category resolution keeps the `task` tool's rule that a user pin wins: when none of `categories.quick.models` is connected, delegate-core returns the first pin anyway and the senpi-task resolver only checks that the catalog knows it. The sidecar child then failed its auth check in milliseconds (`No API key found for <provider>`) and never reached the connected rung it carried as a fallback, so recall stayed off on a machine that had one. The new `kibitzer/sidecar-connected-order.ts` reorders the sidecar's candidates, only when the registry's availability list is known and non-empty: connected candidates lead (pins in pin order, then the builtin chain), unconnected ones stay behind them, and when none is connected the resolution is `category_unavailable` with the unconnected pins' providers first, then the chain's missing providers, so the existing notice names what to connect. An empty availability list (the stale first-turn snapshot) keeps today's resolution, and the `task` tool's resolution is unchanged.
+
+RED on dev: the four new `sidecar-model.test.ts` cases failed (an anthropic-only registry with an openai pin resolved `openai/gpt-5.6-luna-fast`; an unconnected pin led the fallbacks ahead of a connected chain rung; nothing connected still resolved the pin). GREEN on this branch: 11/11 in that file, 643/643 across `kibitzer/` and `worker/`.
+
+## 2026-09-30 - deep-low leads with GPT-6.1 Sol at medium, keeping GPT-5.6 Sol behind it (#9214)
+
+`packages/model-core/src/category-model-requirements.ts` `deep-low` is now `gpt-6.1-sol` (medium) on `openai|chatgpt-subscription`, then `gpt-6.1-sol-fast` (medium) on the same two lanes, then the unchanged `gpt-5.6-sol` (medium, all four GPT lanes) and `gpt-5.6-sol-fast` (medium) rungs, so Copilot, OpenCode Zen and a registry without 6.1 Sol still resolve the lane at the same effort. `packages/omo-opencode/src/tools/delegate-task/openai-categories.ts` moves the builtin default to `openai/gpt-6.1-sol` medium and `DEEP_LOW_GATE_MODELS` to `gpt-6.1-sol`, `gpt-6.1-sol-fast`, `gpt-5.6-sol-fast`, `gpt-5.6-sol`; the installer config writes the three later rungs as `fallback_models`. Every other category is unchanged.
+
+Model capabilities: `model-capabilities/supplemental-entries.ts` adds `gpt-6.1-sol` and `gpt-6.1-sol-fast` (family `gpt`, text and image input, 400K context, 128K output), `model-capability-aliases.ts` maps `gpt-6.1-sol-fast` to `gpt-6.1-sol` through the OpenAI fast service-tier alias, and `model-capability-heuristics.ts` gives 6.1 Sol its own family ahead of `gpt-6` with the `low`..`max` ladder, downgrading `none` and `minimal` to `low` the way Astra does (plain GPT-6 Sol still accepts `none`). The family pattern matches the normalized id `gpt-6-1-sol`, since `detectHeuristicModelFamily` rewrites dotted versions first.
+
+Tests: the chain pins in `model-requirements-categories.test.ts`, `gpt-6-family-routing.test.ts` and `category-routing-policy.test.ts` carry the four-rung chain; the guardrail and fast-alias tests list both 6.1 ids; the new `gpt-6.1-sol.test.ts` covers the effort ladder, the 128K output cap, and deep-low resolving 6.1 Sol over 5.6 Sol, the 6.1 Fast tier before 5.6, and Copilot's 5.6 Sol without 6.1. On the OpenCode side `openai-categories.test.ts`, `tools.test.ts` (the gate opens on each of the four ids) and `generate-omo-config.test.ts` follow. Docs: the deep-low rows in `agent-model-matching.md`, `installation.md` (plus a GPT-6.1 Sol model row), `overview.md`, `configuration.md`, `features.md`, the three `docs/examples` configs and `packages/omo-opencode/src/tools/AGENTS.md`.
+
+## 2026-09-30 - The RPC serializer test recovers upstream code from the installed engine, not its source map
+
+`packages/omo-native/test/rpc-stream-errors.test.mjs` read the unprepared RPC serializer from `dist/modes/rpc/rpc-mode.js.map`, and senpi 2026.9.29-4 publishes no sourcemaps (senpi #2362), so the file failed at import with `ENOENT ... rpc-mode.js.map`. `bin/lib/rpc-stream-errors.js` now exports `serialization` and `guardedSerialization`, and the test reads the installed `rpc-mode.js` and reverses the one replacement the preparation makes, failing loud if the installed file carries neither shape. Disabling the preparation's write turns 4 of the 13 tests red.
+
+## 2026-09-30 - The binary build resolves senpi's sidecars from senpi's real path (senpi 2026.9.29-4 no longer bundles its dependencies)
+
+`script/engine-sidecar-sources.ts` built its `createRequire` from `node_modules/@code-yeongyu/senpi/package.json`, the symlink bun's isolated linker puts at the repo root. Node walks `node_modules` from the path it is given, so once senpi stopped bundling its dependencies (senpi #2360) the walk from the symlink found neither `@code-yeongyu/senpi-codemode` nor the `senpi-pty` alias, which bun links beside senpi's real path in `node_modules/.bun/<key>/node_modules`. `engineSidecarSources()` threw `codemode sidecar @code-yeongyu/senpi-codemode is not installed` and native prebuild staging fell back to `npm pack` (6 failures in `script/build-omo-binary.test.ts` and `script/engine-sidecar-sources.test.ts`). The require now starts at `realpathSync(senpiPackageDir)`, the same walk `engine-dependency.js` (#9184) uses, and the css-tree trio test's independent oracle resolves from the real path too, because that is where Node resolves the engine from. Reverting the production line brings all 6 failures back.
+
+## 2026-09-30 - Adopt senpi 2026.9.29-4: project trust covers legacy .pi resources, interactive sessions stop joining a shared host, and the Claude 403 fallback fix
+
+Every senpi pin moves from 2026.9.29-3 to 2026.9.29-4 (root devDependency, `omo-native`, the `omo-senpi` and `senpi-task` peer and dev pins including the `@earendil-works/pi-tui` aliases, their pin tests, `bun.lock`, the version comment in `packages/omo-native/bin/lib/provider-map.json`, and the engine version named in `senpi-task`'s category coverage test). `packages/omo-senpi/plugin/extensions/omo.js` embeds the provider-map comment, so its version string and source digest line move; the rest of the bundle is unchanged. `bun.lock` changes more than a usual pin bump because senpi now declares its real dependencies instead of bundling them (senpi #2360, prepared for by #9184). 2026.9.29-4 brings:
+
+- **Breaking**: legacy `.pi/` project resources follow project trust, and a `.pi`-only project asks for trust (senpi #2375). Interactive sessions no longer join a shared RPC host; `pi.sharedHostEnabled`, `experimental.sharedHost` and `rendered_components` are gone (senpi #2347).
+- **Session gateway**: `pi.session.registerControlEndpoint` / `admitExternalMessage`, `release_session` takeover, `wake` on multi-session hosts and kind-aware `host status --all` rows (senpi #2365).
+- **Fixes**: transient Claude 403 retries the same model and a billing-dead fallback never pins the session (senpi #2379), trusted projects load `.agents/skills` again (senpi #2374), atomic session rewrites and consistent failed writes with `transcript_write_failed` (senpi #2367, #2369, #2370), every `extension_ui_response` gets a reply (senpi #2373), Claude answers in the user's language (senpi #2368), smaller installs (senpi #2363, #2364).
+
+## 2026-09-29 - A Z.ai-only or Xiaomi-only machine gets a quick model, so Kibitzer recall runs (#9202)
+
+The `quick` chain had no Z.ai or Xiaomi rung. A machine logged in to only one of them therefore had no quick model: quick delegation was unavailable, and Kibitzer refused with `beyond_category` and stayed off, because its recall sidecar is pinned to `memory.recall.category` (default `quick`). Both chains (`packages/senpi-task/src/category/fallback-chains.ts` and the `packages/model-core/src/category-model-requirements.ts` mirror) now end with `glm-5.3-flash (low)` on `zai|zai-coding-cn` (model-core: `zai-coding-plan`) and `mimo-v2.6-flash (low)` on `xiaomi`. The rungs come after `claude-haiku-4-5`, so every provider set that resolved quick before resolves the same model. Neither flash model can turn thinking off: the engine catalog maps `off` to null for `glm-5.3-flash`, and `mimo-v2.6-flash` declares `supportsDisabledThinking: false`. Both run at `low`, like `qwen3.6-flash`. The telemetry vocabulary adds both model ids, and the doc tables list them. The bundled capability snapshot gains the four entries these rungs resolve through (`glm-5.3-flash`, `zai/glm-5.3-flash`, `mimo-v2.6-flash`, `xiaomi/mimo-v2.6-flash`), taken from a fresh models.dev fetch through the generator's own normalization, so every built-in requirement model stays snapshot-backed. The full refresh belongs to the scheduled refresh-model-capabilities workflow. `omo-native/test/category-coverage.test.ts`, which runs the real engine with only a Z.ai key, now expects `quick` to be usable.
+
+The Desktop's prompt surface is not passed through the environment. A host process keeps the environment of the client that started it. The operator endpoint `rpc.sock` is shared by `omo daemon run`/`attach`, the thread tools of any session, the Desktop's control endpoint and every Desktop thread on Windows. A surface variable set by a Desktop spawn would therefore reach CLI sessions on that host. The surface is carried per session instead, on the RPC session-open commands (senpi#2380).
+
+## 2026-09-29 - Comment-checker resolvers find the npm binary in every layout the package has shipped (#9180)
+
+`@code-yeongyu/comment-checker` is moving from one tarball that bundles five platform binaries under `vendor/<platform>/` (255 MiB per install) to per-platform optional packages `@code-yeongyu/comment-checker-<platform>-<arch>` with the binary in `bin/` (51 MiB; code-yeongyu/go-claude-code-comment-checker#12). Only Native saw both layouts, because it calls the package's own `getBinaryPath()`. The OpenCode hook resolver (`comment-checker-core` `resolveCommentCheckerBinary`) looked only in `bin/`, so it missed every 0.7.1+ npm install, and the doctor (`findCommentCheckerPackageBinary`) knew `vendor/` but not the platform package. `comment-checker-core/src/package-binary.ts` now owns one lookup: the platform package resolved from the root package's own location, then `vendor/<platform>-<arch>/`, then `postinstall`'s `bin/`. The core resolver, the doctor and the LazyCodex component's fallback all use it. Resolution order around it (env override, shared cache, PATH, lazy download) is unchanged.
+
+RED on dev: the resolver matrix against real npm installs of 0.8.0 and of the per-platform packages returned no path from the core resolver for either layout, and none from the doctor for the per-platform layout. The real `doctor --json` reported `Comment checker: no` for the per-platform install. On this branch every surface returns the installed binary for both layouts, and that binary's check exits 2 on a comment. The built LazyCodex `PostToolUse` hook blocks with the checker's message in both layouts.
+
+## 2026-09-29 - One invalid value no longer wipes an omo.json file: only that key is dropped and `omo doctor` names it (#7670)
+
+Before this change a single malformed value in `omo.jsonc` (for example `"task": { "host_engine_policy": "sometimes" }`) made the loader reject the whole file, so every valid key in it silently stopped applying. `packages/omo-config-core/src/loader/layer-validation.ts` now validates a file in three gates: the prototype-tamper guard still rejects the file fail-closed before anything else, unknown keys are still stripped with one `unknown-keys` diagnostic (now also inside array elements, so `teams.alpha.members.0.bogus` is reported as an unknown key by its dotted path, and a diagnostic with an empty key list is never emitted), and every remaining invalid value is pruned by `prune-invalid-leaves.ts`. The pruner walks each zod issue path, drops the smallest failing subtree (the wrong value, or the object that lacks a required key, including inside arrays such as `teams.alpha.members.0.color`), removes containers left empty, and re-validates in bounded passes; an exhausted bound, an issue on the document root, or a file with nothing valid left still rejects the file with its existing `validation` diagnostic. This covers every section of the layer schema: the shared top level, `task`, `agents`, `categories`, `teams`, the `[native]` / `[senpi]` / `[codex]` blocks and `profiles`. Each dropped key is its own `invalid-value` diagnostic whose `path` is the file and whose `issuePaths` names the dotted key. The merged-config fallback follows the same rule: a merged value that fails the full schema is dropped with an `invalid-value` diagnostic at `(merged omo config)` instead of resetting the whole config to defaults. The prune builds on the agents/categories leaf pruning from #7676 (contributed by @mooire733), generalized from `agents.<name>` / `categories.<name>` leaves to every path.
+
+`omo doctor` (native, both the launcher and the compiled binary, through `packages/omo-native/config-doctor-runtime.ts`) prints one `WARN config: ~/.omo/omo.jsonc: task.host_engine_policy ignored (invalid value)` line per dropped key, one `... ignored (unknown key)` line per stripped key, and one `... not loaded (<reason>)` line per file that contributed nothing, all shared from `omoConfigDiagnosticLines`. In the OpenCode edition, `validatePluginConfig` reports the loader's dropped keys as `warnings` (the file stays valid) and applies the same pruning to the `[opencode]` block against the plugin schema, so one bad field no longer drops the whole `agents` section of that block; its doctor lists each warning as its own issue.
+
 ## 2026-09-29 - omo doctor runs the computer-use diagnostic again: omo-ai ships the prelude assets beside the doctor runtime (#9193)
 
 On 5.1.1 every `omo doctor` printed `WARN computer use: diagnostics unavailable: ENOENT ... plugin/runtime/category-coverage/assets.generated.json`, on every OS. `plugin/runtime/category-coverage/index.js` inlines the computer-use doctor, and with it `senpi-desktop-prelude`'s `assets.ts`, which reads `assets.generated.json` from beside the bundle at import time. `build-extension-core.mjs` stages that file beside the extension bundles in `extensions/`, but `script/build-omo-native.ts` never staged it beside the category-coverage bundle, so the published tarball had it only in `plugin/extensions/`.

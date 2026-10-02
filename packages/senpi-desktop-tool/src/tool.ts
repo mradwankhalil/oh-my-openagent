@@ -5,7 +5,7 @@ import {
 	type ComputerScreenshot,
 	isReadOnlyComputerCall,
 } from "@oh-my-opencode/senpi-desktop-protocol";
-import { type ExecuteTool, runComputerCode } from "@oh-my-opencode/senpi-desktop-service";
+import { DesktopEngineRpcError, type ExecuteTool, runComputerCode } from "@oh-my-opencode/senpi-desktop-service";
 import type { ComputerHandle } from "./activation";
 import { Check } from "typebox/value";
 import { actionBranches, argumentsError } from "./action-schema";
@@ -17,6 +17,7 @@ import {
 } from "./params";
 import { type ComputerHostContext, runSnapshot } from "./session";
 import { computerToolDefinition } from "./tool-definition";
+import { computerFailure } from "./cua-errors";
 
 export interface ComputerToolDeps {
 	readonly handle: ComputerHandle;
@@ -34,6 +35,7 @@ export interface ComputerToolDetails {
 
 /** Structurally the agent's `AgentToolResult<ComputerToolDetails>`. */
 export interface ComputerToolResult {
+	isError?: boolean;
 	content: ComputerDisplay[];
 	details: ComputerToolDetails;
 }
@@ -126,11 +128,11 @@ export function createComputerTool(deps: ComputerToolDeps) {
 					// Classifies (and rejects unknown or unchainable methods) before anything reaches the engine.
 					const readOnly = isReadOnlyComputerCall(params.chain);
 					const code = renderCallChain(params.chain);
-					return run(context, { code, readOnly, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }, signal);
+					return permissionResult(run(context, { code, readOnly, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }, signal), handle);
 				}
 				case "run": {
 					const timeoutSeconds = params.timeout ?? DEFAULT_TIMEOUT_SECONDS;
-					return run(context, { code: params.code, readOnly: params.read_only === true, timeoutSeconds }, signal);
+					return permissionResult(run(context, { code: params.code, readOnly: params.read_only === true, timeoutSeconds }, signal), handle);
 				}
 				case "capabilities":
 					await handle.activate(context);
@@ -143,6 +145,21 @@ export function createComputerTool(deps: ComputerToolDeps) {
 			}
 		},
 	};
+}
+
+async function permissionResult(result: Promise<ComputerToolResult>, handle: ComputerHandle): Promise<ComputerToolResult> {
+	try {
+		return await result;
+	} catch (error) {
+		if (!(error instanceof DesktopEngineRpcError) || error.data === null || !("code" in error.data) ||
+			error.data.code !== "PermissionDenied") throw error;
+		const failure = computerFailure(error.data.code, error.message, handle.settings().stopHotkey, error.data.permission);
+		return {
+			content: [{ type: "text", text: JSON.stringify(failure, null, 2) }],
+			details: { value: failure },
+			isError: true,
+		};
+	}
 }
 
 export type ComputerTool = ReturnType<typeof createComputerTool>;

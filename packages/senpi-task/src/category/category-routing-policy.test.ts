@@ -37,7 +37,7 @@ describe("Senpi category routing policy", () => {
       {
         providers: ["xiaomi", "opencode-go"],
         model: "mimo-v2.6-pro",
-        variant: "max",
+        variant: "high",
       },
       {
         providers: ["xai", "github-copilot", "opencode-go"],
@@ -57,7 +57,7 @@ describe("Senpi category routing policy", () => {
       {
         providers: ["qwen-token-plan", "alibaba-token-plan", "qwen-token-plan-cn", "alibaba-token-plan-cn"],
         model: "qwen3.8-max-preview",
-        variant: "max",
+        variant: "high",
       },
       {
         providers: ["deepseek", "opencode-go"],
@@ -67,7 +67,7 @@ describe("Senpi category routing policy", () => {
       {
         providers: ["xiaomi", "opencode-go"],
         model: "mimo-v2.5-pro",
-        variant: "max",
+        variant: "high",
       }
     ])
   })

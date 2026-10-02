@@ -1,4 +1,5 @@
 import { DAEMON_EXIT } from "./daemon-args.js"
+import { daemonConfigDoctorLines } from "./daemon-config.js"
 import { parseEngineLine, readAllEndpoints } from "./daemon-operations.js"
 import { formatDoctorLines } from "./daemon-status.js"
 
@@ -6,7 +7,18 @@ import { formatDoctorLines } from "./daemon-status.js"
  * The `omo doctor` view: one INFO line, never a FAIL - a machine without a daemon is healthy,
  * it just has nothing shared to report. Returned as lines so doctor can place it with the rest.
  */
-export function daemonReportLines({ engine, pluginRoot, agentDir, env, platform }) {
+export function daemonReportLines(options) {
+  const configLines = daemonConfigDoctorLines({
+    pluginRoot: options.pluginRoot,
+    agentDir: options.agentDir,
+    env: options.env,
+    cwd: options.cwd,
+    loadRuntime: options.loadTaskConfig,
+  })
+  return [...engineReportLines(options), ...configLines]
+}
+
+function engineReportLines({ engine, agentDir, env, platform }) {
   if (platform === "win32") return ["INFO Daemon: unavailable on win32 (no unix socket to share)"]
   const all = readAllEndpoints(engine, agentDir, env)
   if (all.kind === "all") {

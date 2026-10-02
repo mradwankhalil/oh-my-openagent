@@ -6,6 +6,7 @@ import { delimiter, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { writeTestExecutable } from "./omob-test-executable"
 import { installOmobLauncher, parseOmobArgs } from "./build-omob"
+import { removeTempRoot } from "./remove-temp-root"
 
 const builder = resolve(import.meta.dir, "build-omob.ts")
 const canonical = "https://github.com/code-yeongyu/oh-my-openagent.git"
@@ -106,7 +107,7 @@ describe("omob refresh integration", () => {
 				expect(readFileSync(installed, "utf8").split("\n")[0]).toBe("#!/bin/sh")
 			}
 			expect(readFileSync(f.builds, "utf8")).toBe(process.platform === "win32" ? "compile\ncompile\n" : "compile\n")
-		} finally { rmSync(f.root, { recursive: true, force: true }) }
+		} finally { removeTempRoot(f.root) }
 	}, 60_000)
 
 	for (const name of ["omob", "omob-custom", "omob-custom.exe", "omob-custom.EXE"]) {
@@ -126,7 +127,7 @@ describe("omob refresh integration", () => {
 				expect(version.error).toBeUndefined()
 				expect(version.status).toBe(0)
 				expect(version.stdout.split("\n")[0]).toBe(`${name} dev build`)
-			} finally { rmSync(f.root, { recursive: true, force: true }) }
+			} finally { removeTempRoot(f.root) }
 		}, 60_000)
 	}
 
@@ -182,7 +183,7 @@ describe("omob refresh integration", () => {
 				}
 				expect(f.git(f.omo, ["branch", "--show-current"])).toBe("feature")
 				expect(readFileSync(join(f.omo, "uncommitted"), "utf8")).toBe("keep me")
-			} finally { rmSync(f.root, { recursive: true, force: true }) }
+			} finally { removeTempRoot(f.root) }
 		}, 60_000)
 	}
 })

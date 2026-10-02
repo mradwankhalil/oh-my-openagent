@@ -1,10 +1,12 @@
+import { updateUsageAnswer } from "./bin/lib/update-args.js"
+
 export const RELEASES_URL = "https://github.com/code-yeongyu/oh-my-openagent/releases"
 const RELEASES_API = "https://api.github.com/repos/code-yeongyu/oh-my-openagent/releases?per_page=100"
 const RELEASE_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$/
 const RELEASE_TARGET = /^(?:darwin|linux|windows)-(?:x64|arm64)(?:-musl)?(?:-baseline)?$/
 
 export type FetchReleases = () => Promise<unknown>
-export type CompiledUpdateResult = { readonly output: string; readonly exitCode: number }
+export type CompiledUpdateResult = { readonly output: string; readonly exitCode: number; readonly stream?: "stdout" | "stderr" }
 
 // omo-ai publishes betas as `5.0.0-0.beta.90` while the GitHub release is tagged `v5.0.0-beta.90`.
 export function releaseVersionOf(omoAiVersion: string): string {
@@ -77,7 +79,10 @@ export async function compiledUpdate(options: {
   readonly platform: NodeJS.Platform
   readonly arch: string
   readonly fetchReleases: FetchReleases
+  readonly args?: readonly string[]
 }): Promise<CompiledUpdateResult> {
+  const usage = options.args === undefined ? undefined : updateUsageAnswer(options.args)
+  if (usage !== undefined) return { output: usage.text, exitCode: usage.exitCode, stream: usage.stream }
   const asset = releaseAssetName(options.releaseTarget, options.platform, options.arch)
   const current = releaseVersionOf(options.omoAiVersion)
   let target: string | undefined

@@ -2033,12 +2033,53 @@
             "null"
           ],
           "description": "Recovery hint for the model, e.g. `capture it again`."
+        },
+        "permission": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionDeniedData"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "code"
       ],
       "additionalProperties": false
+    },
+    "PermissionDeniedData": {
+      "type": "object",
+      "properties": {
+        "permission": {
+          "$ref": "#/definitions/TccPermission"
+        },
+        "settingsUrl": {
+          "type": "string"
+        },
+        "app": {
+          "type": "string"
+        },
+        "relaunchRequired": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "permission",
+        "settingsUrl",
+        "app",
+        "relaunchRequired"
+      ],
+      "additionalProperties": false
+    },
+    "TccPermission": {
+      "type": "string",
+      "enum": [
+        "screen_recording",
+        "accessibility"
+      ]
     },
     "MethodRejectionData": {
       "type": "object",

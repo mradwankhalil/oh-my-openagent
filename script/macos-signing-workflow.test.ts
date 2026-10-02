@@ -15,8 +15,12 @@ const workflowPath = new URL("../.github/workflows/publish-platform.yml", import
 const signingScript = new URL("../.github/scripts/macos-sign-and-notarize.sh", import.meta.url)
 const entitlements = new URL("../.github/scripts/omo-bun-executable.entitlements", import.meta.url)
 const signingMaterial = ["CSC_LINK", "CSC_KEY_PASSWORD", "APPLE_API_KEY", "APPLE_API_KEY_ID", "APPLE_API_ISSUER"]
-// The signing script only ever runs on macOS runners, and the sandbox's POSIX PATH stub cannot shadow tools under Windows bash.
-const posixBashTest = test.skipIf(process.platform === "win32")
+// Two gates, each with its reason. Tests that run the signing script against a stubbed macOS toolchain need POSIX bash:
+// the script only ever runs on macOS runners, and under Windows bash the PATH stubs cannot shadow the real tools.
+// Argument parsing exits before any tool is touched, so it is checked on every platform with a working bash.
+const bashRuns = spawnSync("bash", ["-c", "exit 0"]).status === 0
+const posixBashTest = test.skipIf(process.platform === "win32" || !bashRuns)
+const anyBashTest = test.skipIf(!bashRuns)
 
 const stepsSchema = z.array(z.object({ name: z.string().optional(), if: z.string().optional() }))
 const jobs = z.object({ jobs: z.object({
@@ -152,8 +156,33 @@ function runSigning(root: string, env: NodeJS.ProcessEnv, binary: string) {
   return spawnSync("bash", [join(root, ".github", "scripts", "macos-sign-and-notarize.sh"), "--identifier", "ai.sisyphuslabs.omo", binary], { cwd: root, env, encoding: "utf8" })
 }
 
+/** Feeds the script through stdin, so a CRLF checkout on Windows parses as the LF file the macOS runners execute. */
+function runSigningArgs(args: readonly string[]) {
+  const script = readFileSync(signingScript, "utf8").replace(/\r\n/g, "\n")
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const name of [...signingMaterial, "MACOS_SIGNING_REQUIRED"]) delete env[name]
+  return spawnSync("bash", ["-s", "--", ...args], { cwd: tmpdir(), env, input: script, encoding: "utf8" })
+}
+
+describe("signing script arguments", () => {
+  // Guards the CLI contract the publish workflow calls: bad invocations exit 2 with a reason, before any signing tool runs.
+  anyBashTest("rejects a missing identifier or file list, an unknown option, and a missing file", () => {
+    const cases = [
+      [[], "usage:"],
+      [["--identifier", "ai.sisyphuslabs.omo"], "usage:"],
+      [["--identifier", "ai.sisyphuslabs.omo", "--bogus"], "unknown option: --bogus"],
+      [["--identifier", "ai.sisyphuslabs.omo", "omo-no-such-binary"], "not a file: omo-no-such-binary"],
+    ] as const
+    for (const [args, reason] of cases) {
+      const result = runSigningArgs(args)
+      expect(result.status, `${args.join(" ")}: ${result.stderr}`).toBe(2)
+      expect(result.stderr).toContain(reason)
+    }
+  })
+})
+
 describe("notarization polling", () => {
-  test("submits every input even when two share a basename", () => {
+  posixBashTest("submits every input even when two share a basename", () => {
     const { root, env, binary } = notarySandbox(["Accepted"])
     try {
       mkdirSync(join(root, "arm64"))
@@ -173,7 +202,7 @@ describe("notarization polling", () => {
     }
   })
 
-  test("keeps polling through transient notarytool errors until Apple accepts", () => {
+  posixBashTest("keeps polling through transient notarytool errors until Apple accepts", () => {
     const { root, env, binary } = notarySandbox(["FAIL", "In Progress", "FAIL", "Accepted"])
     try {
       const result = runSigning(root, env, binary)
@@ -184,7 +213,7 @@ describe("notarization polling", () => {
     }
   })
 
-  test("fails when Apple rejects the submission", () => {
+  posixBashTest("fails when Apple rejects the submission", () => {
     const { root, env, binary } = notarySandbox(["In Progress", "Invalid"])
     try {
       const result = runSigning(root, env, binary)

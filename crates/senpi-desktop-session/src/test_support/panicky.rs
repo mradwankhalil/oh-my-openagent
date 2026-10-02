@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use senpi_desktop_backend_fake::{FakeBackend, FakeMethod};
 use senpi_desktop_core::ax::AxBackend;
 use senpi_desktop_core::backend::{Backend, DeliveryMode, PointerEvent};
-use senpi_desktop_core::error::CoreResult;
+use senpi_desktop_core::error::{CoreResult, DesktopError, PermissionDeniedData, TccPermission};
 use senpi_desktop_core::frame::FrameGeometry;
 use senpi_desktop_core::keys::KeyName;
 use senpi_desktop_core::types::{
@@ -36,6 +36,15 @@ pub(crate) struct PanickyFake {
 }
 
 impl Backend for PanickyFake {
+    fn permission_denied(&mut self, permission: TccPermission) -> DesktopError {
+        DesktopError::permission_denied_with(PermissionDeniedData {
+            permission,
+            settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility".to_owned(),
+            app: "Marked fake launcher".to_owned(),
+            relaunch_required: true,
+        }, "backend-enriched permission refusal")
+    }
+
     fn capabilities(&mut self) -> DesktopCapabilities {
         self.inner.capabilities()
     }

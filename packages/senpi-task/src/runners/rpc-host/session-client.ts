@@ -12,7 +12,9 @@ import {
   createSenpiRpcClient,
   probeWithEngine,
   toWireOpen,
+  type HostPromptDisposition,
   type HostProtocolProbe,
+  type HostQueuedInputDisposition,
   type HostRpcClient,
   type HostRpcClientFactory,
   type HostSessionOpenInput,
@@ -27,6 +29,9 @@ import {
 } from "./session-wire"
 
 export type { HostSessionOpenInput } from "./session-transport"
+
+// send() settles with no value: the runner does not consume the host's input disposition.
+const ignoreHostDisposition = (_disposition: HostPromptDisposition | HostQueuedInputDisposition): void => undefined
 export { HostSessionDetachedError, HostSessionOpenError, isRoutedTo, SessionHeldElsewhereError } from "./session-wire"
 
 export interface OpenedHostSession {
@@ -177,11 +182,11 @@ export class HostSessionClient {
         return client.prompt(
           command.message,
           command.streamingBehavior === undefined ? {} : { streamingBehavior: command.streamingBehavior },
-        )
+        ).then(ignoreHostDisposition)
       case "steer":
-        return client.steer(command.message)
+        return client.steer(command.message).then(ignoreHostDisposition)
       case "followUp":
-        return client.followUp(command.message)
+        return client.followUp(command.message).then(ignoreHostDisposition)
       case "abort":
         return client.abort()
       default:

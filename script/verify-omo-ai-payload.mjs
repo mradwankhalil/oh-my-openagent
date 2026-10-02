@@ -27,6 +27,9 @@ const REQUIRED_ARTIFACTS = [
   "plugin/runtime/category-coverage/index.js",
   // That bundle inlines the computer-use doctor, which reads the prelude assets from beside itself (#9193).
   "plugin/runtime/category-coverage/assets.generated.json",
+  // omo daemon resolves its settings (task.host_engine_policy and task.host_idle_exit_ms) through the config
+  // loader with it (bin/lib/daemon-config.js).
+  "plugin/runtime/task-config/index.js",
 ]
 
 // A bundle that reads `join(dirname(fileURLToPath(import.meta.url)), "<file>")` needs <file> packed

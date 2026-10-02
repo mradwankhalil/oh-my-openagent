@@ -4,31 +4,20 @@ import { delimiter, isAbsolute, join, relative, sep } from "node:path"
 import { spawnNode } from "./child-process.js"
 import { doctorCoverageLines } from "./category-coverage.js"
 import { doctorComputerUseLines } from "./computer-use-doctor.js"
+import { doctorConfigLines } from "./config-doctor.js"
 import { runDaemonCommand } from "./daemon.js"
 import { runDoctor } from "./doctor.js"
-import { ensureEnginePrepared } from "./engine-prepare.js"
+import { ensureEnginePrepared, preparePluginLaunchSpec } from "./engine-prepare.js"
 import { migrateLegacyBunGlobalManifest } from "./legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./agent-dir.js"
 import { nearestNodeBin, packageManifest, packageRoot, readJson, releaseBanner, releaseChannel, resolveSenpi, updateTarget } from "./package-paths.js"
 import { runSelfUpdate } from "./self-update.js"
+import { isSelfUpdate } from "./update-args.js"
 import { detectHarnesses } from "./setup-detect.js"
 import { readSetupSuggestionCache, spawnSetupSuggestionRefresh } from "./setup-detect-cache.js"
 import { printSetupReport } from "./setup-report.js"
 
 const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server", "host"])
-const selfUpdateTargets = new Set(["self", "senpi", "omo"])
-// Updating extensions or model catalogs is the engine's job; everything else under `update`
-// would try to replace the pinned engine, so the launcher answers it instead.
-const engineUpdateTargets = new Set(["--extensions", "--models"])
-
-function isSelfUpdate(args) {
-  if (args[0] !== "update") return false
-  const rest = args.slice(1)
-  if (rest.length === 0) return true
-  if (rest.some((arg) => engineUpdateTargets.has(arg))) return false
-  return rest.every((arg) => arg.startsWith("-") || selfUpdateTargets.has(arg))
-}
-
 // Identity the engine adopts for this install: what the user sees, where state lives, which
 // environment prefix is read first, what goes on the wire, and which channel to check for
 // updates. The engine consumes this once and scrubs it, so nested engine processes are
@@ -136,6 +125,7 @@ function senpiEnvironment(senpiRoot) {
 }
 
 function preparedSenpi() {
+  preparePluginLaunchSpec({ pluginRoot: join(packageRoot, "plugin") })
   const senpi = resolveSenpi()
   ensureEnginePrepared({
     senpiRoot: senpi.packageRoot,
@@ -162,6 +152,12 @@ async function spawnSenpi(args, withExtension) {
   await spawnNode(senpi.cliPath, finalArgs, { env })
 }
 
+// Routine launch notices go straight to stderr: Bun renders every console.error line red on a
+// color terminal, which made a healthy startup look like a failure (#8442).
+function notice(line) {
+  process.stderr.write(`${line}\n`)
+}
+
 function isInteractiveDefault(args) {
   return process.stderr.isTTY === true && !args.includes("-p") && !args.includes("--print")
 }
@@ -180,7 +176,7 @@ function reportLegacyFlatAdoption() {
   }
   if (!result.adopted) return
   const moved = [...result.copied, ...result.backfilled].join(", ")
-  console.error(`omo: carried forward settings from the legacy ~/.omo layout (${moved})`)
+  notice(`omo: carried forward settings from the legacy ~/.omo layout (${moved})`)
 }
 
 /**
@@ -235,8 +231,8 @@ export async function runLauncher(args = process.argv.slice(2)) {
     process.exitCode = 2
     return
   }
-  // The daemon is the engine's to run; omo only supplies the launch spec, the policy from
-  // omo.json, and an exit code the caller can branch on.
+  // The daemon is the engine's to run; omo only supplies the launch spec, the task settings from
+  // the omo config (daemon-config.js), and an exit code the caller can branch on.
   if (command === "daemon") {
     const outcome = runDaemonCommand(args.slice(1), {
       engine: { run: engineHostCall },
@@ -261,17 +257,28 @@ export async function runLauncher(args = process.argv.slice(2)) {
     return
   }
   if (command === "doctor") {
-    const [categoryCoverage, computerUse] = args[1] === "--reap"
-      ? [[], []]
+    // Doctor is a launch too: it reports only what the launch-time preparation could not fix.
+    preparePluginLaunchSpec({ pluginRoot: join(packageRoot, "plugin") })
+    const [categoryCoverage, computerUse, configDiagnostics, gateway] = args[1] === "--reap"
+      ? [[], [], [], []]
       : await Promise.all([
           doctorCoverageLines({ agentDir: canonicalAgentDir() }),
           doctorComputerUseLines(),
+          doctorConfigLines(),
+          import("./gateway.js").then((hook) => hook.gatewayDoctorLines()),
         ])
     runDoctor(await detectHarnesses(), args.slice(1), {
       daemonEngine: { run: engineHostCall },
       categoryCoverage,
       computerUse,
+      configDiagnostics,
+      gateway,
     })
+    return
+  }
+  if (command === "gateway") {
+    const { runGatewayCommand } = await import("./gateway.js")
+    process.exitCode = await runGatewayCommand(args.slice(1))
     return
   }
   if (command === "setup") {
@@ -301,9 +308,9 @@ export async function runLauncher(args = process.argv.slice(2)) {
     return
   }
   if (isInteractiveDefault(args)) {
-    console.error(releaseBanner())
+    notice(releaseBanner())
     if (process.stdout.isTTY === true && setupSuggestionForLaunch()) {
-      console.error("omo: sibling credentials detected; run `omo setup` to review them")
+      notice("omo: sibling credentials detected; run `omo setup` to review them")
     }
   }
   await spawnSenpi(args, true)

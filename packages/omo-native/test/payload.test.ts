@@ -90,6 +90,7 @@ describe("build:omo-native staged payload", () => {
             join("runtime", "lsp-daemon", "dist", "cli.js"),
             join("runtime", "category-coverage", "index.js"),
             join("runtime", "category-coverage", "assets.generated.json"),
+            join("runtime", "task-config", "index.js"),
             join("scripts", "install.mjs"),
             "package.json",
           ]

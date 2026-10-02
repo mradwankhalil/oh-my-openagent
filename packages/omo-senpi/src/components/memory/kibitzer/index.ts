@@ -157,7 +157,7 @@ export function createKibitzerComposition(options: KibitzerCompositionOptions): 
       createTools: (binding) => createKibitzerSidecarTools({
         workspaceRoot: cwd,
         session: { entries: () => captured.branch },
-        memory: { repo, cache: corpusCache },
+        memory: { repo, cache: corpusCache, queryExpansion: settings.queryExpansion },
         nudge: binding.nudge,
         budget: binding.budget,
       }),

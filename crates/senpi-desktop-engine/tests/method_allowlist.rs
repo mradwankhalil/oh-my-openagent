@@ -6,7 +6,7 @@
 mod common;
 
 use common::{fake_backend, Engine, TWO_DISPLAYS};
-use senpi_desktop_core::methods::{Effect, Exposure, Method, METHODS};
+use senpi_desktop_core::methods::{Effect, Exposure, METHODS};
 use serde_json::json;
 
 const SNAPSHOT: &[(&str, &str, &str)] = &[
@@ -69,11 +69,6 @@ fn the_engine_method_table_equals_the_snapshot() {
         .map(|spec| (spec.name, effect(spec.effect), exposure(spec.exposure)))
         .collect();
     assert_eq!(table, SNAPSHOT);
-}
-
-#[test]
-fn stop_path_resume_is_host_only() {
-    assert_eq!(Method::StopPathResume.spec().exposure, Exposure::HostOnly);
 }
 
 #[test]

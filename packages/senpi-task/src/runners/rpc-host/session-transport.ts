@@ -1,4 +1,4 @@
-import type { RpcExtensionUIResponse, RpcSessionState, RpcTransportGoneError } from "@code-yeongyu/senpi"
+import type { RpcClient, RpcExtensionUIResponse, RpcSessionState, RpcTransportGoneError } from "@code-yeongyu/senpi"
 
 import { loadSenpiBarrel, senpiProbeHost, senpiRpcClient, type SenpiHostProtocolInfo } from "../../lazy/senpi-barrel"
 import type { SenpiThinkingLevel } from "../../senpi/thinking-level"
@@ -10,6 +10,11 @@ import { HostUnavailableError, TASK_DAEMON_PROTOCOL_VERSION, TASK_DAEMON_REQUIRE
  * behind it, the `open_session` payload, and whether the daemon that answered may host this child.
  */
 
+/** How the host settled a prompt: started a turn, delivered it to the running turn, or queued it. */
+export type HostPromptDisposition = Awaited<ReturnType<RpcClient["prompt"]>>
+/** How the host settled a steer/follow-up: delivered to the running turn, or queued behind it. */
+export type HostQueuedInputDisposition = Awaited<ReturnType<RpcClient["steer"]>>
+
 /** omo's structural view of the engine's `RpcClient`; the pinned engine may predate its fields. */
 export interface HostRpcClient {
   start(): Promise<void>
@@ -18,9 +23,9 @@ export interface HostRpcClient {
   openSession(options: HostOpenSessionWire): Promise<{ sessionId: string; attached?: boolean }>
   closeSession(sessionId?: string): Promise<void>
   sendExtensionUIResponse(response: RpcExtensionUIResponse): Promise<void>
-  prompt(message: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<void>
-  steer(message: string): Promise<void>
-  followUp(message: string): Promise<void>
+  prompt(message: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<HostPromptDisposition>
+  steer(message: string): Promise<HostQueuedInputDisposition>
+  followUp(message: string): Promise<HostQueuedInputDisposition>
   abort(): Promise<void>
   getState(): Promise<RpcSessionState>
   getEntries(since?: string): Promise<RpcEntriesResult>

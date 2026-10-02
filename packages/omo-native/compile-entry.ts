@@ -4,29 +4,29 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   embeddedText,
-  isProvisionedExecutable,
   materializeProvisionedExecutable,
   provisionEmbeddedRuntime,
   runningExecutablePath,
   selectRuntimeManifest,
-  shouldReexecAfterProvisioning,
   type EmbeddedFile,
   type EmbeddedManifest,
 } from "./compile-runtime"
-import { propagateResult, runChild } from "./bin/lib/child-process.js"
+import { handOffToProvisionedRuntime, planProvisionedLaunch } from "./provisioned-handoff"
 import { buildLabel, parseBuildInfo, parseEngineBuildStamp, versionLines } from "./build-info"
 import { compiledUpdate, fetchGitHubReleases, releaseAssetName, RELEASES_URL } from "./compiled-update"
 import { migrateLegacyBunGlobalManifest } from "./bin/lib/legacy-bun-global-migration.js"
 import { adoptLegacyFlatState, canonicalAgentDir } from "./bin/lib/agent-dir.js"
 import { nearestNodeBin, readJson, releaseBanner } from "./bin/lib/package-paths.js"
-import { daemonReportLines, runDaemonCommand } from "./bin/lib/daemon.js"
+import { runDaemonCommand } from "./bin/lib/daemon.js"
 import { runDoctor } from "./bin/lib/doctor.js"
-import { migrationReport } from "./bin/lib/doctor-migration.js"
-import { piConfigReport } from "./bin/lib/doctor-pi-config.js"
-import { detectHarnesses, needsSetupSuggestion } from "./bin/lib/setup-detect.js"
-import { printSetupReport } from "./bin/lib/setup-report.js"
+import { isSelfUpdate, updateUsageAnswer } from "./bin/lib/update-args.js"
+import { detectHarnesses } from "./bin/lib/setup-detect.js"
+import { runSetup } from "./bin/lib/setup-import.js"
+import { runCompiledDoctor, type CompiledDoctorOptions } from "./compiled-doctor"
+import { compiledDiagnosticRuntimeLoader, loadCompiledCoverageEngine } from "./compiled-diagnostic-runtime"
 import { isInternalSupervisorLaunch, runInternalSupervisor } from "./supervisor-fast-path"
 import { registerEngineRuntimeModules } from "./engine-runtime-modules"
+import { applyCachedClaudeCode } from "../omo-senpi/src/components/claude-code/index"
 import { spawnSync } from "node:child_process"
 import { delimiter } from "node:path"
 import {
@@ -48,13 +48,6 @@ import { pruneMissingStoreIndexEntriesSync } from "../senpi-task/src/runners/rpc
 // Probe receipts: .omo/evidence/20260825-bun-compile-release-binaries/
 
 const earlyCommands = new Set(["install", "remove", "list", "config", "auth", "app-server", "host"])
-const selfUpdateTargets = new Set(["self", "senpi", "omo"])
-const engineUpdateTargets = new Set(["--extensions", "--models"])
-const doctorArtifacts = [
-  ["plugin manifest", "plugin/package.json"],
-  ["extension", "plugin/extensions/omo.js"],
-  ["lsp-daemon runtime", "plugin/runtime/lsp-daemon/dist/cli.js"],
-] as const
 
 export function buildSenpiArgs(args: string[], execDir: string): string[] {
   const command = args[0]
@@ -144,38 +137,23 @@ export function remapSenpiEnvironment(source: NodeJS.ProcessEnv = process.env, e
   return env
 }
 
-type DaemonEngine = { run(args: string[], options: { env: Record<string, string | undefined> }): { exitCode: number; stdout: string; stderr: string } }
-
-type MigrationOptions = { env?: NodeJS.ProcessEnv; homeDir?: string; platform?: NodeJS.Platform }
-
-function runCompiledDoctor(inventory: Awaited<ReturnType<typeof detectHarnesses>>, execDir: string, enginePin: string, engine?: DaemonEngine, migration: MigrationOptions = {}): void {
-  let failed = false
-  const lines: string[] = []
-  for (const [label, artifact] of doctorArtifacts) {
-    if (existsSync(join(execDir, artifact))) lines.push(`PASS ${label}: ${artifact}`)
-    else {
-      lines.push(`FAIL ${label}: missing ${artifact}`)
-      failed = true
-    }
-  }
-  const packageJson = readJson(join(execDir, "package.json"))
-  for (const line of versionLine(packageJson, enginePin).split("\n")) lines.push(`INFO ${line}`)
-  if (engine !== undefined) {
-    lines.push(...daemonReportLines({ engine, pluginRoot: join(execDir, "plugin"), agentDir: canonicalAgentDir(), env: process.env, platform: process.platform }))
-  }
-  lines.push(...migrationReport({ ...migration, standalone: true }, null))
-  lines.push(...piConfigReport({ env: migration.env, homeDir: migration.homeDir }))
-  if (needsSetupSuggestion(inventory)) lines.push("INFO no credentials found; run omo setup to review sibling stores")
-  console.log(lines.join("\n"))
-  process.exitCode = failed ? 1 : 0
+type CompiledLauncherOptions = CompiledDoctorOptions & {
+  readonly runSetup?: (args: string[], options: Record<string, unknown>) => Promise<void>
 }
 
-function isSelfUpdate(args: string[]): boolean {
-  if (args[0] !== "update") return false
-  const rest = args.slice(1)
-  if (rest.length === 0) return true
-  if (rest.some((arg) => engineUpdateTargets.has(arg))) return false
-  return rest.every((arg) => arg.startsWith("-") || selfUpdateTargets.has(arg))
+export function compiledUpdateCommand(rawBuildInfo: unknown): string {
+  const info = parseBuildInfo(rawBuildInfo)
+  return info === undefined ? "omo update" : `rebuild with: bun run ${info.command}`
+}
+
+function answerUpdateHint(args: string[], rawBuildInfo: unknown): void {
+  const usage = updateUsageAnswer(args)
+  if (usage === undefined) {
+    console.log(updateHint(rawBuildInfo))
+    return
+  }
+  ;(usage.stream === "stderr" ? console.error : console.log)(usage.text)
+  process.exitCode = usage.exitCode
 }
 
 export function answerCompiledFastPath(
@@ -191,7 +169,7 @@ export function answerCompiledFastPath(
     return true
   }
   if (isSelfUpdate(args)) {
-    console.log(updateHint(manifest.buildInfo))
+    answerUpdateHint(args, manifest.buildInfo)
     return true
   }
   return false
@@ -250,7 +228,7 @@ function compiledRollbackMigration() {
   }
 }
 
-export async function runCompiledLauncher(args: string[], execDir: string, enginePin = "unknown", compiledPackageRoot?: string, migration: MigrationOptions = {}): Promise<boolean> {
+export async function runCompiledLauncher(args: string[], execDir: string, enginePin = "unknown", compiledPackageRoot?: string, migration: CompiledLauncherOptions = {}): Promise<boolean> {
   const packageJson = readJson(join(execDir, "package.json")) as { version: string; omoBuild?: unknown }
   migrateLegacyBunGlobalManifest(execDir)
   adoptLegacyFlatState()
@@ -293,40 +271,35 @@ export async function runCompiledLauncher(args: string[], execDir: string, engin
   }
   if (command === "doctor") {
     const inventory = await detectHarnesses()
-    if (compiledPackageRoot) runCompiledDoctor(inventory, compiledPackageRoot, enginePin, engine, migration)
-    else runDoctor(inventory, [], { daemonEngine: engine })
+    if (compiledPackageRoot) {
+      const stamped = readJson(join(compiledPackageRoot, "package.json")) as { version: string; omoBuild?: unknown; engineBuild?: unknown }
+      await runCompiledDoctor({
+        inventory,
+        execDir: compiledPackageRoot,
+        version: stamped.version,
+        versionText: versionLine(stamped, enginePin),
+        updateCommand: compiledUpdateCommand(stamped.omoBuild),
+        engine,
+        args: args.slice(1),
+        options: migration,
+      })
+    } else runDoctor(inventory, [], { daemonEngine: engine })
     return true
   }
-  if (command === "setup") { printSetupReport(await detectHarnesses()); process.exitCode = 0; return true }
+  // The same consent-gated import as `bin/omo.js`, with its coverage row answered by this binary.
+  if (command === "setup") {
+    await (migration.runSetup ?? runSetup)(args.slice(1), {
+      loadCoverageRuntime: compiledDiagnosticRuntimeLoader(compiledPackageRoot ?? execDir),
+      loadCoverageEngine: loadCompiledCoverageEngine,
+    })
+    return true
+  }
   if ((command === "--version" || command === "-v") && args.length === 1) { console.log(versionLine(packageJson, enginePin ?? "unknown")); return true }
-  if (isSelfUpdate(args)) { console.log(updateHint(packageJson.omoBuild)); return true }
+  if (isSelfUpdate(args)) { answerUpdateHint(args, packageJson.omoBuild); return true }
   return false
 }
 
-export async function reexecProvisionedRuntime(expected: string, options: {
-  argv?: string[]
-  env?: NodeJS.ProcessEnv
-  platform?: NodeJS.Platform
-  execve?: ((file: string, argv: string[], env: NodeJS.ProcessEnv) => void) | null
-  run?: typeof runChild
-  propagate?: typeof propagateResult
-} = {}): Promise<void> {
-  const argv = options.argv ?? process.argv.slice(2)
-  const env = options.env ?? process.env
-  const run = options.run ?? runChild
-  const propagate = options.propagate ?? propagateResult
-  const execve = options.execve === undefined ? process.execve : options.execve
-  if ((options.platform ?? process.platform) !== "win32" && typeof execve === "function") {
-    try {
-      execve(expected, [expected, ...argv], env)
-      return
-    } catch {
-      // A provisioned binary that cannot replace this image still uses the async fallback.
-    }
-  }
-  const result = await run(expected, argv, { env })
-  propagate(result)
-}
+export { reexecProvisionedRuntime } from "./provisioned-handoff"
 
 async function main(): Promise<void> {
   const embedded = (globalThis as typeof globalThis & { Bun?: { embeddedFiles?: EmbeddedFile[] } }).Bun?.embeddedFiles as EmbeddedFile[] | undefined
@@ -344,14 +317,13 @@ async function main(): Promise<void> {
   const manifest = JSON.parse(await embeddedText(manifestFile)) as EmbeddedManifest
   const runningExecutable = runningExecutablePath()
   const expected = join(homedir(), ".omo", "binary-runtime", manifest.omoAiVersion, process.platform === "win32" ? "omo.exe" : "omo")
-  let execDir = dirname(runningExecutable)
+  const launch = planProvisionedLaunch(runningExecutable, expected)
   // Materialize the provisioned runtime BEFORE answering the informational fast-path.
   // First-run provisioning must happen even for `--version`/`-v`: the release smoke test
   // asserts the provisioned binary exists after `--version`, and provisioning used to be a
   // side effect of the (now-skipped) re-exec. Only the re-exec (relocate) is deferred here,
   // so an already-provisioned install keeps the fast-path's no-re-exec speed.
-  const needsProvisioning = !isProvisionedExecutable(runningExecutable, expected)
-  if (needsProvisioning) {
+  if (launch.provision) {
     await provisionEmbeddedRuntime(manifest, embedded, dirname(expected))
     materializeProvisionedExecutable(runningExecutable, expected)
   }
@@ -363,27 +335,28 @@ async function main(): Promise<void> {
       platform: process.platform,
       arch: process.arch,
       fetchReleases: fetchGitHubReleases,
+      args: process.argv.slice(2),
     })
-    console.log(result.output)
+    ;(result.stream === "stderr" ? console.error : console.log)(result.output)
     process.exitCode = result.exitCode
     return
   }
   if (answerCompiledFastPath(process.argv.slice(2), manifest)) return
-  if (needsProvisioning) {
-    if (shouldReexecAfterProvisioning()) {
-      await reexecProvisionedRuntime(expected)
-      return
-    }
-    execDir = dirname(expected)
+  if (launch.handOff) {
+    await handOffToProvisionedRuntime(expected)
+    return
   }
+  const execDir = launch.execDir
   // Inspector and custom execArgv isolation is unsupported in compiled binaries; the provisioned
   // executable delegates to the engine in-process as required by the native startup contract.
   if (await runCompiledLauncher(process.argv.slice(2), execDir, manifest.enginePin, execDir)) return
   if (shouldPrintCompiledBanner(process.argv.slice(2), process.stderr.isTTY === true)) {
-    for (const line of compiledBannerLines(manifest)) console.error(line)
+    // Not console.error: Bun renders that red, and the banner is not an error (#8442).
+    for (const line of compiledBannerLines(manifest)) process.stderr.write(`${line}\n`)
   }
   process.argv.splice(2, process.argv.length - 2, ...buildSenpiArgs(process.argv.slice(2), execDir))
   Object.assign(process.env, remapSenpiEnvironment(process.env, execDir))
+  applyCachedClaudeCode(process.env, execDir)
   if (isInternalSupervisorLaunch(process.argv.slice(2)) && await runInternalSupervisor(process.argv.slice(2))) return
   await registerEngineRuntimeModules()
   await import("../../node_modules/@code-yeongyu/senpi/dist/cli.js") // literal: see import note above

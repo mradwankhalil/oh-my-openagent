@@ -25,7 +25,7 @@ import {
   type LoadedDaemonLaunchSpec,
 } from "./daemon-contract"
 import { daemonLaunchOptions, daemonLaunchProfileId } from "./launch-options"
-import { DAEMON_LAUNCH_SPEC_FILENAME, readDaemonLaunchSpec } from "./launch-spec"
+import { DAEMON_LAUNCH_SPEC_FILENAME, DaemonLaunchSpecError, readDaemonLaunchSpec } from "./launch-spec"
 import { shareDaemonEnsure } from "./daemon-single-flight"
 import { classifyEnsureFailure } from "./ensure-failure"
 import { writeStartedShardSidecar } from "./shard-sidecar"
@@ -109,7 +109,7 @@ async function ensureTaskDaemonOnce(
 ): Promise<EnsuredTaskDaemon> {
   const ports = input.ports ?? {}
   const host = ports.host ?? (await loadTaskDaemonHostPort())
-  const launchSpec = ports.launchSpec ?? loadDaemonLaunchSpec()
+  const launchSpec = ports.launchSpec ?? loadDaemonLaunchSpec(ports.launchSpecPath)
   const launch = daemonLaunchOptions({
     spec: launchSpec.spec,
     specPath: launchSpec.path,
@@ -225,9 +225,19 @@ async function loadTaskDaemonHostPort(): Promise<TaskDaemonHostPort> {
  * location inside `<pluginRoot>/extensions/` - the same contract `resolveMemberExtensionEntryPath`
  * relies on, and the reason both are only meaningful from the built plugin.
  */
-function loadDaemonLaunchSpec(moduleUrl = import.meta.url): LoadedDaemonLaunchSpec {
-  const path = fileURLToPath(new URL(`../${DAEMON_LAUNCH_SPEC_FILENAME}`, moduleUrl))
-  return { path, spec: readDaemonLaunchSpec(path) }
+function loadDaemonLaunchSpec(
+  path = fileURLToPath(new URL(`../${DAEMON_LAUNCH_SPEC_FILENAME}`, import.meta.url)),
+): LoadedDaemonLaunchSpec {
+  try {
+    return { path, spec: readDaemonLaunchSpec(path) }
+  } catch (error) {
+    // A refused spec is a typed, fixable host refusal (#9208), never a reason-less failure, and it
+    // never falls back: the check stays exactly as strict as the reader makes it.
+    if (error instanceof DaemonLaunchSpecError && error.code === "launch_spec_insecure") {
+      throw new HostUnavailableError("launch_spec_insecure", { fallbackAllowed: false, launchSpecPath: path })
+    }
+    throw error
+  }
 }
 
 /** omo-native `bun-runtime.js` semantics, POSIX half: this process is bun, or a bun is installed. */

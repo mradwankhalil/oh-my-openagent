@@ -35,6 +35,7 @@ export const HOST_START_FAILURE_REASONS = [
   "own_host_unreachable",
   "shard_identity_missing",
   "host_busy",
+  "launch_spec_insecure",
 ] as const
 
 export const SESSION_START_FAILURE_REASONS = [

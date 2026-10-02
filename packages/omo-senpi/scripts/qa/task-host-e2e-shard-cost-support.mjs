@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 
 import { stopParent } from "./task-host-e2e-events.mjs"
 import { pidAlive, spawnParent } from "./task-host-e2e-process.mjs"
-import { binaryDigest, createScenarioSandbox, injectDaemonMockProvider, provisionRuntime } from "./task-host-e2e-sandbox.mjs"
+import { binaryDigest, createScenarioSandbox, injectDaemonMockProvider, provisionRuntime, scenarioStateDir } from "./task-host-e2e-sandbox.mjs"
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 export const MOCK_ENTRY = join(scriptDir, "task-host-e2e-shard-cost-mock-provider.mjs")
@@ -41,7 +41,7 @@ export function addProject(sandbox, name, { omoConfig = taskConfig(), script }) 
   const trustPath = join(sandbox.agentDir, "trust.json")
   const trust = JSON.parse(readFileSync(trustPath, "utf8"))
   writeFileSync(trustPath, `${JSON.stringify({ ...trust, [cwd]: true }, null, 2)}\n`)
-  return { name, cwd, stateDir: join(cwd, ".omo", "senpi-task"), script }
+  return { name, cwd, stateDir: scenarioStateDir(cwd, sandbox.agentDir), script }
 }
 
 export const mainProject = (sandbox, script) => ({ name: "proj", cwd: sandbox.cwd, stateDir: sandbox.stateDir, script })

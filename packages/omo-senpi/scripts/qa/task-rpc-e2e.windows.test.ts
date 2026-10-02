@@ -84,6 +84,29 @@ function check(payload: DriverPayload, name: string): DriverCheck | undefined {
   return payload.checks.find((candidate) => candidate.check === name)
 }
 
+function assertDriverChecks(payload: DriverPayload): void {
+  const failed = payload.checks.filter((candidate) => candidate.verdict !== "PASS")
+  if (payload.result !== "PASS" || failed.length > 0) {
+    throw new Error(`WINDOWS_TASK_RPC_E2E result=${payload.result}; failing checks: ${failed.map((candidate) => candidate.check).join(", ") || "none reported"}`)
+  }
+}
+
+test("#given a failing driver check #when asserting the payload #then the check name appears in the failure", () => {
+  const payload = {
+    result: "FAIL",
+    checks: [{ check: "kill_marks_error_killed_true", verdict: "FAIL" }],
+  } as DriverPayload
+  expect(() => assertDriverChecks(payload)).toThrow("kill_marks_error_killed_true")
+})
+
+test("#given the driver reports FAIL #when individual checks look green #then the wrapper still fails", () => {
+  const payload = {
+    result: "FAIL",
+    checks: [{ check: "kill_marks_error_killed_true", verdict: "PASS" }],
+  } as DriverPayload
+  expect(() => assertDriverChecks(payload)).toThrow("WINDOWS_TASK_RPC_E2E result=FAIL")
+})
+
 test.skipIf(!isWin32)(
   "#given the production task driver #when process mode runs on Windows #then it reaches a real RPC child",
   async () => {
@@ -154,15 +177,18 @@ test.skipIf(!isWin32)(
     const payload = parsed as DriverPayload
     const route = check(payload, "process_mode_routes_to_rpc_runner")
     const spawnProof = check(payload, "spawn_process_pid_and_session_jsonl")
+    const killProof = check(payload, "kill_marks_error_killed_true")
     const leakProof = check(payload, "no_leaked_rpc_child_pids")
 
     // then
     console.log(`WINDOWS_TASK_RPC_E2E ${JSON.stringify(payload)}`)
+    assertDriverChecks(payload)
     expect(payload.wiringFixed).toBe(true)
     expect(route?.verdict).toBe("PASS")
     expect(route?.facts?.pid).toBeGreaterThan(0)
     expect(spawnProof?.verdict).toBe("PASS")
     expect(spawnProof?.facts?.sessionJsonl).toBe(true)
+    expect(killProof?.verdict).toBe("PASS")
     expect(payload.realCredentialsUntouched).toBe(true)
     expect(payload.wholeDirDigestStable).toBe(true)
     expect(leakProof?.verdict).toBe("PASS")

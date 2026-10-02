@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error::ErrorCode;
+use crate::error::{ErrorCode, PermissionDeniedData};
 use crate::methods::Notification;
 
 /// Engine protocol version reported by `engine.hello`.
@@ -143,6 +143,8 @@ pub struct EngineErrorData {
     pub code: ErrorCode,
     /// Recovery hint for the model, e.g. `capture it again`.
     pub hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<PermissionDeniedData>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

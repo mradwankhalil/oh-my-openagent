@@ -1,3 +1,117 @@
+## 2026-10-01 - Builtin chain rungs name thinking levels their models accept (#9378)
+
+- `category/fallback-chains.ts`: `quick` opencode-go `minimax-m3` / `minimax-m2.7` drop `variant: "max"` (the child now inherits the
+  `quick` lane's `low`); `unspecified-low` `mimo-v2.6-pro`, `qwen3.8-max-preview` and `mimo-v2.5-pro` go from `max` to `high`, the level
+  senpi already clamped them to. Every other rung in this file and in `agents/builtin/fallback-chains.ts` names a level its catalog model
+  accepts. A new header bullet records the deliberate divergence from `model-core`, which keeps `max` for OpenCode.
+- `runners/builtin-chain-thinking-level.test.ts` drives `resolveCategory` -> the child's thinking level and child-local
+  `retry.fallbackChains` into a real senpi `AgentSession` over the real catalog, faking only the logged-in providers: the `quick` child runs
+  `minimax-m3` at `low` (was a silent clamp to `high`); repeated loads of every category an opencode-go plus xiaomi machine serves leave
+  `fallback.log` free of `validation_warning` (four on the pre-fix chains); a user `models[]` entry with an unsupported level still warns once
+  and still runs at an accepted level. The fixture's `assistant`/`streamMessage` helpers are exported for that last case.
+- Pins updated to the new variants: `fallback-chains`, `category-routing-policy`, `unspecified-low-chain`,
+  `in-process-runtime-fallback`, `manager-runtime-fallback`.
+
+## 2026-10-01 - In-process task children honor the caller's settings (#9353)
+
+- `runners/in-process/runtime-fallback-settings.ts` `createRuntimeFallbackSettings` now takes the caller's settings source (`cwd`, `agentDir`, `projectTrusted`) and gives the child a private in-memory copy of the caller's global and project settings, replacing only the fallback policy: `retry.modelFallback`, `retry.fallbackChains` and `retry.fallbackRevertPolicy` come from the child's own chain, and the child's `maxRetries`/`baseDelayMs` override wins over both caller scopes. Before, the child got an in-memory manager holding only that policy (#6478), so `retry.provider.streamStartTimeoutMs`, `retry.provider.timeoutMs`, `httpIdleTimeoutMs`, `compaction.*` and `thinkingBudgets` fell back to the engine defaults (a 300 s first-event guard and a 300 s request idle timeout). Children now also honor the caller's compaction and thinking settings, matching process children.
+- The project layer reaches the child only when the parent session trusted the project: `ChildSpec.projectTrusted` comes from the parent's `ctx.isProjectTrusted()` through `InProcessSessionContext`; an unknown decision counts as untrusted. Child writes stay in the in-memory copy, so the caller's settings files are never written.
+- `in-process-caller-settings.test.ts` drives a real child through `InProcessRunner`: a caller `streamStartTimeoutMs` of 150 ms cuts a silent provider at 150 ms (on the base the guard never fired within 10 s), the request carries the caller's `httpIdleTimeoutMs` (base: 300000), a caller fallback chain is never used by a child without its own chain, a child with its own chain falls back only to it, and the caller's settings file stays byte-identical.
+
+## 2026-10-01 - Repeated Bun Windows advisories remain external termination output (#9228)
+
+- `runners/rpc/exit-mapping.ts` accepts any positive number of known Bun child-reaper startup advisory lines in the Windows exit-code-1/no-signal case. A different stderr line still classifies the child as crashed.
+- Focused cases pin N advisory-only lines to `killed: true` and advisory lines plus one real error to `crashed`.
+
+## 2026-10-01 - Windows child parity regression (#9274, #6709)
+
+- `builtin-tool-parity.integration.test.ts` reloads the in-process child loader beside the `DefaultResourceLoader` policy used by process children and compares their builtin registrations directly. This removes both Windows CLI cold starts while pinning equal platform-specific builtin counts, exact names, and `web_search`; shared parent and session-default tool policy remains covered by the existing surface tests.
+
+## 2026-09-30 - In-process task children load senpi's builtin tools (#9274, #6709)
+
+- `runners/in-process/child-loader.ts` now uses senpi's `DefaultResourceLoader` with every path-loaded extension and resource disabled, so in-process children receive the same builtin extension factories as process children without re-running the parent's omo-senpi or project extensions. The child binds the loaded extensions so model-aware variants settle before its first request, keeps process-mode's `--no-ask-user` flag, and preserves category/agent allow and deny policy. Shared task/workpool tools now follow process mode; lead-only workflow/team and question tools remain excluded.
+- `builtin-tool-parity.integration.test.ts` drives both execution modes through a local OpenAI-compatible provider and compares the actual tool payloads. Before the fix the in-process child had 11 tools versus 27 in process mode and lacked `web_search`; after bundle regeneration both payloads are identical.
+
+## 2026-10-01 - deep-high runs GPT-6 Astra at high (#9372)
+
+- `category/fallback-chains.ts` `deep-high` and `category/openai-categories.ts` (builtin default
+  `chatgpt-subscription/gpt-6-astra`): variant `high` (was `xhigh`). The chain stays one Astra rung on all four GPT lanes and the
+  gate stays `gpt-6-astra`, so the two deep lanes still never substitute each other's model.
+- Tests that pinned `xhigh` for deep-high (`fallback-chains`, `openai-categories`, `openai-lane`, `gating`, `resolve-category`)
+  now expect `high`.
+- `manager/credential-failure.ts` `terminalFailureMessage`: a task that ends on a spent usage limit no longer ends on the bare
+  provider error. The text adds `<provider>/<model> reached its usage limit, so this task stopped.`, then
+  `No other model in its fallback chain could take over.` when `runtimeFallbackCandidates` leaves nothing (a deep-high child
+  whose every Astra lane is spent), then the recovery: retry after the reset or point the category elsewhere in omo.json. A
+  live deep-high run against a ChatGPT-subscription Astra that answers `access_terminated_error` returns exactly that text to
+  the parent. `credential-failure.test.ts` covers the exhausted chain, a limit with rungs left (no exhaustion claim) and an
+  ordinary error (unchanged).
+
+## 2026-09-30 - The foreground task wait is bounded at 900 s (#8759 cluster, senpi#2323)
+
+- `tools/task/foreground-wait.ts` `waitForForegroundTask`: the wait before a foreground child is promoted to background
+  is now `min(prompt-cache safe-wait budget, MAX_FOREGROUND_WAIT_SECONDS)`, with `MAX_FOREGROUND_WAIT_SECONDS = 900`.
+  The cap applies to both budget sources (`ctx.getPromptCacheSafeWaitSeconds()` and `PI_PROMPT_CACHE_SAFE_WAIT_SECONDS`).
+  The budget is already TTL - 30 s, so a 5 min TTL still waits 270 s and a 1 h TTL waits 900 s instead of 3570 s.
+  Without the cap, senpi#2323 (1 h TTL on the Claude SDK lane) would block a parent turn for up to ~59.5 min.
+- `promoted.budgetSeconds` reports the effective (capped) wait. No separate raw-budget field: its only consumers,
+  `execute-single.ts` and `execute-batch.ts`, pass it to `backgroundConversionText`, which renders the seconds the parent
+  actually waited, and 900 s is still inside the cache-safe window.
+- No-op today: every current budget is 270 s.
+- `foreground-wait-cap.test.ts`: getter 3570 and env 3570 schedule the deadline at 900_000 ms and promote with 900,
+  getter 270 stays at 270_000 ms, and the task tool notice states 900 s. Removing the cap fails the three 3570 cases.
+
+## 2026-09-30 - deep-low leads with GPT-6.1 Sol at medium (#9214)
+
+- `category/fallback-chains.ts` `deep-low`: `gpt-6.1-sol` (medium) on `chatgpt-subscription|openai`, then `gpt-6.1-sol-fast`
+  (medium) on the same lanes, then the unchanged `gpt-5.6-sol` (medium, all four GPT lanes) and `gpt-5.6-sol-fast` (medium)
+  rungs. The comment above the chain says why: 6.1 Sol is served only on the two OpenAI lanes, so 5.6 Sol keeps Copilot,
+  OpenCode Zen and a registry without 6.1 on the lane at the same effort.
+- `category/openai-categories.ts`: the builtin default becomes `chatgpt-subscription/gpt-6.1-sol` medium and
+  `DEEP_LOW_GATE_MODELS` becomes `gpt-6.1-sol`, `gpt-6.1-sol-fast`, `gpt-5.6-sol-fast`, `gpt-5.6-sol`, so a 5.6-Sol-only
+  registry still opens the lane. The task tool's listing annotation reads `(requires gpt-6.1-sol or gpt-6.1-sol-fast or
+  gpt-5.6-sol-fast or gpt-5.6-sol)`.
+- Tests: `fallback-chains.test.ts`, `resolve-category.test.ts` and `openai-categories.test.ts` pin the new chain, default and
+  gate; two new `openai-categories.test.ts` cases resolve `gpt-6.1-sol` over `gpt-5.6-sol` on the subscription lane and
+  the 6.1 Fast tier over plain 5.6 Sol; `gated-categories.test.ts` pins the new annotation. `scripts/manual-category-qa.ts`
+  expects the gate's attempted model `chatgpt-subscription/gpt-6.1-sol`.
+
+## 2026-09-29 - A refused launch spec is a typed start failure that names the file and its fix (#9208)
+
+- `runners/rpc-host/daemon.ts` `loadDaemonLaunchSpec`: a `DaemonLaunchSpecError("launch_spec_insecure")` from
+  `readDaemonLaunchSpec` becomes `HostUnavailableError("launch_spec_insecure")` with `fallbackAllowed: false` and the
+  spec path. `rejectInsecureMode` is unchanged. Before, the error was not a `HostUnavailableError`, so `RpcHostRunner`
+  wrapped it as `host_unavailable` with no reason and every surface said only "The task host is unavailable."
+- `launch_spec_insecure` joins `HOST_START_FAILURE_REASONS`; `RunnerFailure.launch_spec_path` carries the path omo
+  resolved itself (never child output). `manager/start-failure.ts` `describeStartFailure` names it, home-relative, in
+  the public message with `chmod 644 <path>`, so the task record's `failure_reason` / `error_message`, the task tool
+  result and the `team_create` error (`member '<name>' failed to start: ...`) all show it. Rollback to R0 drops the new
+  reason like every post-R0 reason.
+- `TaskDaemonPorts.launchSpecPath` lets a test point the ensure at a spec file on disk.
+- `runners/rpc-host-launch-spec.test.ts`: a 0664 spec fails typed with the path and never falls back, the same spec at
+  0644 opens on the host, and the record plus the team error name the reason, the path and the fix.
+
+## category: quick ends with glm-5.3-flash and mimo-v2.6-flash, so a Z.ai-only or Xiaomi-only machine has a quick model (#9202)
+
+- `CATEGORY_FALLBACK_CHAINS.quick` appends `zai|zai-coding-cn/glm-5.3-flash (low)` and `xiaomi/mimo-v2.6-flash (low)`
+  after `claude-haiku-4-5`. Trailing keeps every provider set that resolved quick before on the same model. `low` is
+  the lowest effort both accept: `glm-5.3-flash` maps `off` to null and `mimo-v2.6-flash` cannot disable thinking.
+- `quick-single-provider.test.ts` resolves quick on a `zai`, `zai-coding-cn` and `xiaomi` registry (red on dev: no
+  rung, `model_unavailable`) and pins that haiku still wins when a Claude login is present. `coverage.test.ts` now
+  lists quick as usable on a Z.ai-only machine; `dead-chain.test.ts` and `fallback-chains.test.ts` list the new rungs.
+
+## store: task state moves out of the user's repository (#9201, DESKTOP-31)
+
+- `store/project-state-directory.ts`: `resolveProjectStateDirectory(projectDir, name)` puts a project's runtime state at
+  `<agent dir>/projects/<folder>-<sha256 of the path, 12 hex>/<name>`, the agent dir being the first of
+  `OMO_`/`SENPI_`/`PI_CODING_AGENT_DIR`, else `<HOME>/.omo/agent`. The path hash keeps two same-named projects apart. A
+  `<project>/.omo/<name>` an earlier release created keeps winning, so in-flight tasks and resumable DAG runs recorded there
+  stay reachable. The module imports only node builtins so QA drivers load it directly.
+- `store/state-dir.ts` `resolveStateDir` uses it; an explicit `task.state_dir` still wins. Before, the default was
+  `<project>/.omo/senpi-task`, an untracked folder in every repository a session ran in.
+- Tests that pinned the old default read the resolved directory instead; `claim-race.test.ts` passes its environment to the
+  spawned children so they resolve under the hermetic test HOME.
+
 ## lifecycle: a reopened parent reclaims its live daemon child when the host that owned it died (#9183)
 
 - `lifecycle/reconcile.ts` `hasForeignLiveOwner`: a resident host-session record whose daemon session is still live stayed

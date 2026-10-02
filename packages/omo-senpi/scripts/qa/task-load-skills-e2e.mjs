@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 
 import { createSandbox, credentialDigest, seedSandbox } from "./drive.mjs"
 import { parseJsonEvents } from "./task-e2e-analysis.mjs"
-import { isolatedChildEnv } from "./sandbox-child-env.mjs"
+import { isolatedChildEnv, sandboxStateDir } from "./sandbox-child-env.mjs"
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const mockProviderEntry = join(scriptDir, "task-e2e-mock-provider.ts")
@@ -143,12 +143,12 @@ function main() {
       return typeof id === "string" && id.startsWith("st_") ? [id] : []
     })[0]
     const taskPath = typeof taskId === "string"
-      ? join(sandbox.cwd, ".omo", "senpi-task", "tasks", `${taskId}.json`)
+      ? join(sandboxStateDir(sandbox), "tasks", `${taskId}.json`)
       : ""
     const taskRecord = taskPath && existsSync(taskPath) ? JSON.parse(readFileSync(taskPath, "utf8")) : undefined
     const spawnPrompt = taskRecord?.spawn_spec?.prompt ?? ""
     const childRoot = typeof taskId === "string"
-      ? join(sandbox.cwd, ".omo", "senpi-task", "children", taskId, "sessions")
+      ? join(sandboxStateDir(sandbox), "children", taskId, "sessions")
       : ""
     const transcript = childRoot
       ? collectJsonl(childRoot).map((path) => readFileSync(path, "utf8")).join("\n")
