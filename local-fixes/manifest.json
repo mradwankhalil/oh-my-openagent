@@ -232,6 +232,35 @@
       ],
       "overlapsWith": [],
       "orderNote": "Patches packages/omo-opencode/src/v2/hook-bridge.ts, which only exists after PR #9016 merges. Apply last; no interaction with fixes 01-12 (different files). Numbered 15 because the v1 line claimed #14 (compaction-context-injector working-model fix, session ses_f26289d0)."
+    },
+    {
+      "id": "16-compaction-loop-breaker",
+      "title": "Break the compaction loop after 2 ineffective rounds; write a handoff note",
+      "commit": "b3941dcbc853b38e8af0608e42464b3b4af57fd8",
+      "patch": "patches/16-compaction-loop-breaker.patch",
+      "why": "On claude-code bridged sessions the bridge keeps its own conversation state: opencode compaction rewrites the DB view (M3 summarize input shrinks 104K->26K->9K) but the continuation prompt stays at the full unreduced size (~780K tokens, cacheRead grows across rounds). Every finished assistant message repopulates the trigger cache with ~780K usage, usageRatio ~= 3.9 vs threshold 0.78, and the trigger re-fires every 60s cooldown forever (ses_f10e47816: six compactions in 14 minutes, round 2 fired 29s after round 1 with ~100 chars of new content). Fix: after 2 consecutive compactions that fail to reduce usage by >=30%, disable preemptive compaction for the session, toast a warning, and write a deterministic plugin-side handoff note (with the last compaction summary) to .omo/handoffs/.",
+      "markers": [
+        "compaction-loop-breaker"
+      ],
+      "overlapsWith": [
+        "13-compaction-pin-checkpoint",
+        "14-compaction-part-marker"
+      ],
+      "orderNote": "Apply after 14. Grafted from the main ledger 2026-10-02; patch path relative to local-fixes/ per v2-int convention."
+    },
+    {
+      "id": "17-tool-args-in-place",
+      "title": "Tool argument rewrites land on the object opencode executes; git env prefix follows the configured shell",
+      "commit": "33582bc1967b5a8d4249e52b5772a95090ac5a3b",
+      "patch": "patches/17-tool-args-in-place.patch",
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/pull/9449",
+      "why": "opencode 1.18 calls tool.execute.before with { args } and then executes its own args reference; it never reads output.args back. replaceToolArgs did output.args = {...}, so all 12 OMO argument rewrites were silently dropped and the args object was detached for every plugin hook after OMO: the squeez plugin wrapped a copy, so almost no command was squeez-wrapped (canon X-124). The helper now edits in place and only replaces a frozen object. Because the non-interactive env prefix becomes live, the hook reads shell from the opencode config so that shell: bash on Windows gets export ...; instead of cmd or PowerShell syntax. NOTE: on the v2 host it is not yet proven whether the tool pipeline reads output.args back; this fix is benign either way (in-place edit + frozen fallback).",
+      "markers": [
+        "shellTypeFromConfiguredShell",
+        "Object.isFrozen(output.args)"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Independent of 01-16. The second marker lives in packages/utils/src, which apply.mjs and verify.mjs search since this fix (ported to v2-int 2026-10-02). Upstream: issue #9448 and PR #9449."
     }
   ],
   "externalFixes": [

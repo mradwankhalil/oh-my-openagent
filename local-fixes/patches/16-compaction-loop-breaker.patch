@@ -1,0 +1,460 @@
+From b3941dcbc853b38e8af0608e42464b3b4af57fd8 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Wed, 30 Sep 2026 04:01:43 +0300
+Subject: [PATCH] fix(compaction): break the compaction loop after 2
+ ineffective rounds and write a handoff note (compaction-loop-breaker)
+
+---
+ ...preemptive-compaction-loop-breaker.test.ts | 120 ++++++++++
+ .../preemptive-compaction-loop-breaker.ts     | 214 ++++++++++++++++++
+ .../hooks/preemptive-compaction-trigger.ts    |   8 +
+ .../src/hooks/preemptive-compaction.ts        |  17 ++
+ 4 files changed, 359 insertions(+)
+ create mode 100644 packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.test.ts
+ create mode 100644 packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.ts
+
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.test.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.test.ts
+new file mode 100644
+index 000000000..72b17c4ee
+--- /dev/null
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.test.ts
+@@ -0,0 +1,120 @@
++import { describe, expect, test, beforeEach, afterEach } from "bun:test"
++import { mkdtempSync, readFileSync, existsSync, rmSync, readdirSync } from "node:fs"
++import { tmpdir } from "node:os"
++import { join } from "node:path"
++import { createCompactionLoopBreaker } from "./preemptive-compaction-loop-breaker"
++
++function makeClient(toasts: string[]) {
++  return {
++    tui: {
++      showToast: async (input: { body: { title: string; message: string } }) => {
++        toasts.push(`${input.body.title}: ${input.body.message}`)
++      },
++    },
++    session: {
++      messages: async () => ({
++        info: [
++          { agent: "compaction", parts: [{ type: "text", text: "SUMMARY-TEXT-FOR-HANDOFF" }] },
++        ],
++      }),
++    },
++  }
++}
++
++let dir: string
++beforeEach(() => {
++  dir = mkdtempSync(join(tmpdir(), "loop-breaker-"))
++})
++
++describe("compaction-loop-breaker", () => {
++  test("two ineffective compactions break the loop and write a handoff note", async () => {
++    const toasts: string[] = []
++    const breaker = createCompactionLoopBreaker({ client: makeClient(toasts), directory: dir })
++
++    // Round 1: baseline 780K, post-compaction still 782K -> ineffective strike 1
++    breaker.onSessionCompacted("ses_a", { input: 1000, cache: { read: 779_000 } })
++    let broke = breaker.onPostCompactionUsage("ses_a", { input: 1107, cache: { read: 781_000 } })
++    expect(broke).toBe(false)
++    expect(breaker.isBroken("ses_a")).toBe(false)
++
++    // Round 2: still no reduction -> strike 2 -> broken
++    breaker.onSessionCompacted("ses_a", { input: 1107, cache: { read: 781_000 } })
++    broke = breaker.onPostCompactionUsage("ses_a", { input: 594, cache: { read: 786_000 } })
++    expect(broke).toBe(true)
++    expect(breaker.isBroken("ses_a")).toBe(true)
++
++    // handoff note + toast land (async fire-and-forget)
++    await new Promise((r) => setTimeout(r, 150))
++    expect(toasts.length).toBe(1)
++    expect(toasts[0]).toContain("Compaction loop detected")
++    const handoffDir = join(dir, ".omo", "handoffs")
++    expect(existsSync(handoffDir)).toBe(true)
++    const notes = readdirSync(handoffDir).filter((f) => f.startsWith("handoff-compaction-loop-ses_a"))
++    expect(notes.length).toBe(1)
++    const note = readFileSync(join(handoffDir, notes[0]), "utf8")
++    expect(note).toContain("compaction loop broken")
++    expect(note).toContain("SUMMARY-TEXT-FOR-HANDOFF")
++    expect(note).toContain("ses_a")
++
++    // further compaction reports are ignored once broken
++    expect(breaker.onPostCompactionUsage("ses_a", { input: 500, cache: { read: 800_000 } })).toBe(false)
++  })
++
++  test("an effective compaction resets the streak", () => {
++    const breaker = createCompactionLoopBreaker({ client: makeClient([]), directory: dir })
++
++    // strike 1: no reduction
++    breaker.onSessionCompacted("ses_b", { input: 0, cache: { read: 780_000 } })
++    breaker.onPostCompactionUsage("ses_b", { input: 0, cache: { read: 785_000 } })
++    expect(breaker.isBroken("ses_b")).toBe(false)
++
++    // next round compaction WORKS (drops to 30K) -> streak reset
++    breaker.onSessionCompacted("ses_b", { input: 0, cache: { read: 785_000 } })
++    breaker.onPostCompactionUsage("ses_b", { input: 5_000, cache: { read: 25_000 } })
++    expect(breaker.isBroken("ses_b")).toBe(false)
++
++    // one more ineffective round is strike 1 again, not 2 -> not broken
++    breaker.onSessionCompacted("ses_b", { input: 0, cache: { read: 25_000 } })
++    breaker.onPostCompactionUsage("ses_b", { input: 0, cache: { read: 26_000 } })
++    expect(breaker.isBroken("ses_b")).toBe(false)
++  })
++
++  test("post-usage without a compaction baseline is ignored", () => {
++    const breaker = createCompactionLoopBreaker({ client: makeClient([]), directory: dir })
++    // no onSessionCompacted happened (e.g. plugin restarted mid-flight)
++    expect(breaker.onPostCompactionUsage("ses_c", { input: 999, cache: { read: 999_000 } })).toBe(false)
++    expect(breaker.isBroken("ses_c")).toBe(false)
++  })
++
++  test("zero-usage compaction events never arm the baseline", () => {
++    const breaker = createCompactionLoopBreaker({ client: makeClient([]), directory: dir })
++    breaker.onSessionCompacted("ses_d", undefined)
++    expect(breaker.onPostCompactionUsage("ses_d", { input: 1, cache: { read: 1 } })).toBe(false)
++    expect(breaker.isBroken("ses_d")).toBe(false)
++  })
++
++  test("clear() forgets a broken session (session.deleted)", () => {
++    const breaker = createCompactionLoopBreaker({ client: makeClient([]), directory: dir })
++    breaker.onSessionCompacted("ses_e", { input: 0, cache: { read: 780_000 } })
++    breaker.onPostCompactionUsage("ses_e", { input: 0, cache: { read: 785_000 } })
++    breaker.onSessionCompacted("ses_e", { input: 0, cache: { read: 785_000 } })
++    breaker.onPostCompactionUsage("ses_e", { input: 0, cache: { read: 786_000 } })
++    expect(breaker.isBroken("ses_e")).toBe(true)
++    breaker.clear("ses_e")
++    expect(breaker.isBroken("ses_e")).toBe(false)
++  })
++
++  test("trigger early-out: a broken session never re-triggers", () => {
++    const breaker = createCompactionLoopBreaker({ client: makeClient([]), directory: dir })
++    breaker.onSessionCompacted("ses_f", { input: 0, cache: { read: 780_000 } })
++    breaker.onPostCompactionUsage("ses_f", { input: 0, cache: { read: 785_000 } })
++    breaker.onSessionCompacted("ses_f", { input: 0, cache: { read: 785_000 } })
++    breaker.onPostCompactionUsage("ses_f", { input: 0, cache: { read: 786_000 } })
++    // the trigger consults the same predicate the breaker exposes
++    expect(breaker.isBroken("ses_f")).toBe(true)
++  })
++})
++
++afterEach(() => {
++  try { rmSync(dir, { recursive: true, force: true }) } catch {}
++})
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.ts
+new file mode 100644
+index 000000000..1786e5d1f
+--- /dev/null
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-loop-breaker.ts
+@@ -0,0 +1,214 @@
++import { mkdir, writeFile } from "node:fs/promises"
++import { join } from "node:path"
++import { log } from "../shared/logger"
++
++// fix: compaction-loop-breaker
++// After N consecutive compactions that fail to reduce the reported context usage
++// (input + cacheRead), stop triggering preemptive compaction for the session and
++// write a handoff note. Observed on claude-code bridged sessions where the bridge
++// carries its own conversation state: opencode compaction rewrites the DB view,
++// but the bridge keeps sending the full unreduced history (~780K tokens), so the
++// trigger re-fires every cooldown forever (ses_f10e47816, 2026-09-30: six
++// compactions in 14 minutes, round 2 fired 29s after round 1 with ~100 chars of
++// new content). Breaking the loop protects the user from unbounded cache-read
++// burn and gives them a handoff to continue in a fresh session.
++
++const LOOP_BREAKER_STRIKES = 2
++const INEFFECTIVE_REDUCTION_RATIO = 0.7
++
++export interface LoopBreakerTokenInfo {
++  input?: number
++  cache?: { read?: number }
++}
++
++interface ClientLike {
++  tui: {
++    showToast: (input: {
++      body: { title: string; message: string; variant: "warning"; duration: number }
++    }) => Promise<unknown>
++  }
++  session: {
++    messages: (input: {
++      path: { id: string }
++      query?: { directory: string }
++    }) => Promise<unknown>
++  }
++}
++
++function totalUsage(tokens: LoopBreakerTokenInfo | undefined): number {
++  if (!tokens) return 0
++  return (tokens.input ?? 0) + (tokens.cache?.read ?? 0)
++}
++
++export function createCompactionLoopBreaker(args: {
++  client: ClientLike
++  directory: string
++}) {
++  const { client, directory } = args
++  // Pre-compaction usage baseline, captured from tokenCache right before the
++  // session.compacted handler deletes it.
++  const baseline = new Map<string, number>()
++  const ineffectiveStreak = new Map<string, number>()
++  const broken = new Set<string>()
++
++  const clear = (sessionID: string): void => {
++    baseline.delete(sessionID)
++    ineffectiveStreak.delete(sessionID)
++    broken.delete(sessionID)
++  }
++
++  const isBroken = (sessionID: string): boolean => broken.has(sessionID)
++
++  const onSessionCompacted = (sessionID: string, preCompactionTokens: LoopBreakerTokenInfo | undefined): void => {
++    if (broken.has(sessionID)) return
++    const pre = totalUsage(preCompactionTokens)
++    if (pre <= 0) return
++    baseline.set(sessionID, pre)
++    log("[preemptive-compaction] loop-breaker tracking post-compaction usage", {
++      sessionID,
++      baseline: pre,
++      ineffectiveStreak: ineffectiveStreak.get(sessionID) ?? 0,
++    })
++  }
++
++  const fetchLastSummary = async (sessionID: string): Promise<string> => {
++    try {
++      const res = (await client.session.messages({
++        path: { id: sessionID },
++        query: { directory },
++      })) as { info?: Array<{ agent?: string; parts?: Array<{ type: string; text?: string }> }> }
++      const messages = res?.info ?? []
++      for (let i = messages.length - 1; i >= 0; i--) {
++        const m = messages[i]
++        if (m?.agent === "compaction") {
++          const text = (m.parts ?? [])
++            .filter((p) => p.type === "text" && p.text)
++            .map((p) => p.text as string)
++            .join("\n")
++          if (text) return text.slice(0, 8000)
++        }
++      }
++    } catch {
++      // best-effort: the note is still useful without the summary
++    }
++    return ""
++  }
++
++  const writeHandoffNote = async (sessionID: string, context: {
++    ineffectiveStreak: number
++    baseline: number
++    latest: number
++    workingModel?: string
++  }): Promise<string | null> => {
++    try {
++      const stamp = new Date().toISOString().replace(/[:.]/g, "-")
++      const dir = join(directory, ".omo", "handoffs")
++      await mkdir(dir, { recursive: true })
++      const summary = await fetchLastSummary(sessionID)
++      const file = join(dir, `handoff-compaction-loop-${sessionID.slice(0, 12)}-${stamp}.md`)
++      const body = [
++        "# Handoff — compaction loop broken",
++        "",
++        `**Session:** \`${sessionID}\``,
++        `**Time:** ${new Date().toISOString()}`,
++        `**Working model:** ${context.workingModel ?? "unknown"}`,
++        "",
++        `## What happened`,
++        `${context.ineffectiveStreak} consecutive compactions failed to reduce the context usage`,
++        `(baseline ${context.baseline.toLocaleString()} tokens -> latest ${context.latest.toLocaleString()} tokens).`,
++        `Auto-compaction is now DISABLED for this session: the provider bridge appears to keep`,
++        `sending the full unreduced history regardless of opencode-side compaction.`,
++        `Continuing this session burns cache reads without making progress.`,
++        "",
++        `## How to proceed`,
++        `1. Start a fresh session in this directory.`,
++        `2. Feed it this file plus the latest compaction summary below.`,
++        `3. Do not resume the wedged session.`,
++        "",
++        summary ? `## Last compaction summary\n\n${summary}` : "_(last compaction summary unavailable)_",
++        "",
++      ].join("\n")
++      await writeFile(file, body, "utf8")
++      return file
++    } catch (error) {
++      log("[preemptive-compaction] loop-breaker failed to write handoff note", {
++        sessionID,
++        error: String(error),
++      })
++      return null
++    }
++  }
++
++  // Returns true when this call broke the loop (caller need not do anything else).
++  const onPostCompactionUsage = (sessionID: string, tokens: LoopBreakerTokenInfo, workingModel?: string): boolean => {
++    if (broken.has(sessionID)) return false
++    const pre = baseline.get(sessionID)
++    if (pre === undefined) return false
++    const post = totalUsage(tokens)
++    if (post <= 0) return false
++    // The baseline is consumed by the first post-compaction measurement.
++    baseline.delete(sessionID)
++
++    const ineffective = post > pre * INEFFECTIVE_REDUCTION_RATIO
++    const streak = ineffective ? (ineffectiveStreak.get(sessionID) ?? 0) + 1 : 0
++    ineffectiveStreak.set(sessionID, streak)
++
++    if (!ineffective) {
++      log("[preemptive-compaction] loop-breaker: compaction reduced usage, streak reset", {
++        sessionID,
++        pre,
++        post,
++      })
++      return false
++    }
++
++    if (streak < LOOP_BREAKER_STRIKES) {
++      log("[preemptive-compaction] loop-breaker: compaction did not reduce usage", {
++        sessionID,
++        pre,
++        post,
++        streak,
++        strikes: LOOP_BREAKER_STRIKES,
++      })
++      return false
++    }
++
++    broken.add(sessionID)
++    log("[preemptive-compaction] compaction loop detected: auto-compaction disabled for session (compaction-loop-breaker)", {
++      sessionID,
++      pre,
++      post,
++      streak,
++    })
++
++    void (async () => {
++      const noteFile = await writeHandoffNote(sessionID, {
++        ineffectiveStreak: streak,
++        baseline: pre,
++        latest: post,
++        workingModel,
++      })
++      await client.tui
++        .showToast({
++          body: {
++            title: "Compaction loop detected",
++            message: noteFile
++              ? `2 compactions did not shrink the context. Auto-compaction stopped. Handoff note: ${noteFile}`
++              : "2 compactions did not shrink the context. Auto-compaction stopped. Start a fresh session.",
++            variant: "warning",
++            duration: 15000,
++          },
++        })
++        .catch(() => {})
++    })()
++
++    return true
++  }
++
++  return {
++    clear,
++    isBroken,
++    onSessionCompacted,
++    onPostCompactionUsage,
++  }
++}
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+index 2596fd761..4f8684d5f 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction-trigger.ts
+@@ -60,6 +60,9 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+   compactedSessions: Set<string>
+   lastCompactionTime: Map<string, number>
+   summarizeStartedAt: Map<string, SummarizeAttempt>
++  loopBreaker?: {
++    isBroken: (sessionID: string) => boolean
++  }
+ }): Promise<void> {
+   const {
+     ctx,
+@@ -71,6 +74,7 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+     compactedSessions,
+     lastCompactionTime,
+     summarizeStartedAt,
++    loopBreaker,
+   } = args
+ 
+   const previousAttempt = summarizeStartedAt.get(sessionID)
+@@ -87,6 +91,10 @@ export async function runPreemptiveCompactionIfNeeded(args: {
+     compactionInProgress.delete(sessionID)
+   }
+ 
++  // fix: compaction-loop-breaker — once a session's compactions have proven
++  // ineffective twice, never trigger again for it (handoff note already written).
++  if (loopBreaker?.isBroken(sessionID)) return
++
+   if (compactedSessions.has(sessionID) || compactionInProgress.has(sessionID)) return
+ 
+   const lastTime = lastCompactionTime.get(sessionID)
+diff --git a/packages/omo-opencode/src/hooks/preemptive-compaction.ts b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+index a56f95600..bc7c811c0 100644
+--- a/packages/omo-opencode/src/hooks/preemptive-compaction.ts
++++ b/packages/omo-opencode/src/hooks/preemptive-compaction.ts
+@@ -5,6 +5,7 @@ import type { ContextLimitModelCacheState } from "../shared/context-limit-resolv
+ 
+ import { createPostCompactionDegradationMonitor } from "./preemptive-compaction-degradation-monitor"
+ import { runPreemptiveCompactionIfNeeded } from "./preemptive-compaction-trigger"
++import { createCompactionLoopBreaker } from "./preemptive-compaction-loop-breaker"
+ import type {
+   CachedCompactionState,
+   PreemptiveCompactionContext,
+@@ -31,6 +32,14 @@ export function createPreemptiveCompactionHook(
+     compactionInProgress,
+   })
+ 
++  // fix: compaction-loop-breaker — after 2 consecutive compactions that do not
++  // reduce the reported usage, disable preemptive compaction for the session and
++  // write a handoff note (claude-code bridge keeps full history otherwise).
++  const loopBreaker = createCompactionLoopBreaker({
++    client: ctx.client,
++    directory: ctx.directory,
++  })
++
+   const toolExecuteAfter = async (
+     input: { tool: string; sessionID: string; callID: string },
+     _output: { title: string; output: string; metadata: unknown }
+@@ -45,6 +54,7 @@ export function createPreemptiveCompactionHook(
+       compactedSessions,
+       lastCompactionTime,
+       summarizeStartedAt,
++      loopBreaker,
+     })
+   }
+ 
+@@ -60,6 +70,7 @@ export function createPreemptiveCompactionHook(
+         summarizeStartedAt.delete(sessionID)
+         tokenCache.delete(sessionID)
+         postCompactionMonitor.clear(sessionID)
++        loopBreaker.clear(sessionID)
+       }
+       return
+     }
+@@ -71,6 +82,7 @@ export function createPreemptiveCompactionHook(
+         // threshold by definition. Reusing it after the prompt has been replaced would
+         // immediately justify another compaction (observed firing at 7% real usage).
+         // Drop it; the next finished non-compaction assistant message re-populates it.
++        loopBreaker.onSessionCompacted(sessionID, tokenCache.get(sessionID)?.tokens)
+         tokenCache.delete(sessionID)
+         postCompactionMonitor.onSessionCompacted(sessionID)
+       }
+@@ -102,6 +114,11 @@ export function createPreemptiveCompactionHook(
+           tokens: info.tokens,
+           agent: typeof info.agent === "string" ? info.agent : undefined,
+         })
++        loopBreaker.onPostCompactionUsage(
++          sessionID,
++          info.tokens,
++          info.modelID ? `${info.providerID}/${info.modelID}` : undefined,
++        )
+       }
+       compactedSessions.delete(sessionID)
+ 
+-- 
+2.55.0.windows.3
+
