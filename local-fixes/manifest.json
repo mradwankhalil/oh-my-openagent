@@ -258,10 +258,11 @@
       "why": "squeez prints its timeout notice but never returns control for wsl.exe commands (one call held a tool for 21,893s). The plugin now injects a supervisor for WSL commands only: bounded wait, taskkill /F /T /PID, exit 124.",
       "markers": [
         "WaitForExit",
-        "taskkill /F /T /PID"
+        "taskkill /F /T /PID",
+        "resolveShellFamily"
       ],
       "verifyWith": "node C:\\Users\\Zephyrus\\.config\\opencode\\tests\\squeez-plugin.test.mjs",
-      "note": "Not part of the OMO repo; unaffected by an OMO update."
+      "note": "Not part of the OMO repo; unaffected by an OMO update. Since 2026-10-02 the same plugin also picks its wrapper from the OpenCode `shell` key (PowerShell form or POSIX form, canon X-124); it relies on fix 17-tool-args-in-place in this ledger, because OMO used to detach the args object the plugin edits. The plugin has its own ledger: Documents/ai/squeez-v2-work/local-fixes (skill mk-squeez-promote)."
     },
     {
       "id": "opencode-compaction-anchor-fix",
