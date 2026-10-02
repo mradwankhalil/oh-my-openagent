@@ -39,7 +39,7 @@ files. The cherry-pick is aborted first, so **nothing is left half-applied**.
 | `03-empty-summary-guard` | abandoned summarize let the stale ratio re-fire compaction at ~7% | [#8473](https://github.com/code-yeongyu/oh-my-openagent/pull/8473) |
 | `04-compaction-pin-resolution` | `agents.<key>.compaction.model` silently fell back to the session model | [#8511](https://github.com/code-yeongyu/oh-my-openagent/pull/8511) |
 | `05-background-agent-liveness` | detached SDK method + no watchdog stranded background tasks ~6h | [#8512](https://github.com/code-yeongyu/oh-my-openagent/pull/8512) |
-| `17-tool-args-in-place` | every tool-argument rewrite was dropped (git env prefix, Claude hook input), and plugins after OMO edited a detached copy, so squeez wrapped nothing | issue [#9448](https://github.com/code-yeongyu/oh-my-openagent/issues/9448) |
+| `17-tool-args-in-place` | every tool-argument rewrite was dropped (git env prefix, Claude hook input), and plugins after OMO edited a detached copy, so squeez wrapped nothing | [#9449](https://github.com/code-yeongyu/oh-my-openagent/pull/9449) (issue [#9448](https://github.com/code-yeongyu/oh-my-openagent/issues/9448)) |
 
 Order matters: `02` edits the file `01` creates, and `04` edits the file `03` touches.
 Do not reorder.
