@@ -7,7 +7,7 @@
 use image::RgbaImage;
 
 use crate::ax::{AxHandle, AxProps};
-use crate::error::{CoreResult, DesktopError};
+use crate::error::{CoreResult, DesktopError, TccPermission};
 use crate::frame::FrameGeometry;
 use crate::keys::KeyName;
 use crate::types::{
@@ -86,6 +86,10 @@ pub enum PointerEvent {
 }
 
 pub trait Backend: Send {
+    fn permission_denied(&mut self, _permission: TccPermission) -> DesktopError {
+        DesktopError::permission_denied("input permission is not granted")
+    }
+
     fn capabilities(&mut self) -> DesktopCapabilities;
     fn displays(&mut self) -> CoreResult<Vec<DesktopDisplay>>;
     fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>>;

@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +56,61 @@ afterEach(() => {
 });
 
 describe("locateDesktopEngine", () => {
+	it.each(["linux", "win32"])("reports no release asset on an empty %s-arm64 installation", (platform) => {
+		const result = locateDesktopEngine({
+			platform, arch: "arm64", execDir: layout.execDir, packageDir: layout.packageDir,
+			repoRoot: layout.repoRoot, runtimeDir: "", isQuarantined: () => false,
+		});
+		expect(result.diagnostic).toMatchObject({
+			code: "native-unavailable", host: `${platform}-arm64`, reason: "no-release-asset",
+		});
+	});
+
+	it("accepts a quarantined sidecar with matching installed checksums", () => {
+		placeEngine(layout.sidecar);
+		const digest = createHash("sha256").update("engine").digest("hex");
+		writeFileSync(path.join(layout.execDir, "native", "prebuilds", "senpi-desktop-engine-checksums.txt"),
+			`${digest}  senpi-desktop-engine-${host}\n`);
+
+		const result = locate(() => true);
+
+		expect(result).toEqual({ path: layout.sidecar, diagnostic: null });
+	});
+
+	it.each([
+		undefined,
+		`${"0".repeat(64)}  senpi-desktop-engine-${host}\n`,
+		`${createHash("sha256").update("engine").digest("hex")} senpi-desktop-engine-${host}\n`,
+		`${"0".repeat(64)}  unknown-engine\n`,
+		`${"0".repeat(64)}  senpi-desktop-engine-linux-x64\n`,
+		`${"0".repeat(64)}  senpi-desktop-engine-${host}\n${"0".repeat(64)}  senpi-desktop-engine-${host}\n`,
+	])("refuses a quarantined sidecar with missing or invalid provenance (%s)", (manifest) => {
+		placeEngine(layout.sidecar);
+		if (manifest !== undefined) {
+			writeFileSync(path.join(layout.execDir, "native", "prebuilds", "senpi-desktop-engine-checksums.txt"), manifest);
+		}
+
+		const result = locate(() => true);
+
+		expect(result.path).toBeNull();
+		expect(result.diagnostic?.code).toBe("quarantined");
+	});
+
+	it("refuses a quarantined sidecar whose native directory escapes the launcher", () => {
+		const outside = path.join(root, "outside");
+		placeEngine(path.join(outside, "prebuilds", host, "senpi-desktop-engine"));
+		const digest = createHash("sha256").update("engine").digest("hex");
+		writeFileSync(path.join(outside, "prebuilds", "senpi-desktop-engine-checksums.txt"),
+			`${digest}  senpi-desktop-engine-${host}\n`);
+		mkdirSync(layout.execDir, { recursive: true });
+		symlinkSync(outside, path.join(layout.execDir, "native"), "junction");
+
+		const result = locate(() => true);
+
+		expect(result.path).toBeNull();
+		expect(result.diagnostic?.code).toBe("quarantined");
+	});
+
 	it("uses OMO_PACKAGE_DIR before a compiled sidecar without an explicit runtime directory", () => {
 		vi.stubEnv("OMO_PACKAGE_DIR", layout.runtimeDir);
 		placeEngine(layout.extracted);

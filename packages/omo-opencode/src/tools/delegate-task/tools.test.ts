@@ -184,11 +184,11 @@ describe("sisyphus-task", () => {
 
       // when / #then
       expect(low).toBeDefined()
-      expect(low.model).toBe("openai/gpt-5.6-sol")
+      expect(low.model).toBe("openai/gpt-6.1-sol")
       expect(low.variant).toBe("medium")
       expect(high).toBeDefined()
       expect(high.model).toBe("openai/gpt-6-astra")
-      expect(high.variant).toBe("xhigh")
+      expect(high.variant).toBe("high")
     })
 
     test("unspecified-high category uses Claude Opus 5.5 medium as primary", () => {
@@ -889,11 +889,13 @@ describe("sisyphus-task", () => {
     })
 
     test.each([
+      ["openai/gpt-6.1-sol"],
+      ["openai/gpt-6.1-sol-fast"],
       ["openai/gpt-5.6-sol-fast"],
       ["openai/gpt-5.6-sol"],
-    ])("keeps deep-low open on either GPT-5.6 Sol tier (%s) while deep-high stays Astra-only", (solId) => {
-      // #given: deep-low gates on gpt-5.6-sol-fast OR gpt-5.6-sol; the builtin default config is plain
-      // GPT-5.6 Sol and the runtime chain walk (category-resolver) picks the rung the registry carries
+    ])("keeps deep-low open on any GPT-6.1 Sol or GPT-5.6 Sol tier (%s) while deep-high stays Astra-only", (solId) => {
+      // #given: deep-low gates on either GPT-6.1 Sol tier OR either GPT-5.6 Sol tier; the builtin default
+      // config is plain GPT-6.1 Sol and the runtime chain walk (category-resolver) picks the rung the registry carries
       const availableModels = new Set<string>([solId])
 
       // #when
@@ -904,7 +906,7 @@ describe("sisyphus-task", () => {
 
       // #then
       const resolved = expectResolvedCategoryConfig(result)
-      expect(resolved.config.model).toBe("openai/gpt-5.6-sol")
+      expect(resolved.config.model).toBe("openai/gpt-6.1-sol")
       expect(resolved.config.variant).toBe("medium")
       expect(resolveCategoryConfig("deep-high", { systemDefaultModel: SYSTEM_DEFAULT_MODEL, availableModels })).toBeNull()
     })
@@ -937,7 +939,7 @@ describe("sisyphus-task", () => {
       // #then
       const resolved = expectResolvedCategoryConfig(result)
       expect(resolved.config.model).toBe("openai/gpt-6-astra")
-      expect(resolved.config.variant).toBe("xhigh")
+      expect(resolved.config.variant).toBe("high")
     })
 
     test("bypasses requiresModel when explicit user config provided", () => {

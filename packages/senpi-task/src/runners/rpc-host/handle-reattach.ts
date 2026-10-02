@@ -99,9 +99,17 @@ export async function recoverLostTransport(subject: ReattachSubject, reattach: H
     observe(taskId, subject.turnResumed)
     return report(rejoined, next.session.instanceId)
   }
-  report("continued", next.session.instanceId)
+  // A reopened session is not a resumed turn until the continuation actually lands. Reporting
+  // before this await counted refused/timed-out deliveries as successful recoveries (omo#9403).
+  try {
+    await subject.continueTurn(reattachContinuationPrompt())
+  } catch (error) {
+    report(subject.alive() ? "lost" : "cancelled", next.session.instanceId)
+    throw error
+  }
+  if (!subject.alive()) return report("cancelled", next.session.instanceId)
   observe(taskId, subject.turnResumed)
-  await subject.continueTurn(reattachContinuationPrompt())
+  report("continued", next.session.instanceId)
 }
 
 /** An observer that throws is logged, never allowed to change what recovery does next. */

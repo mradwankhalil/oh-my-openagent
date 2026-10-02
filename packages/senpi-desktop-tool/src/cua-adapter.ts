@@ -1,3 +1,5 @@
+import type { PermissionDeniedData } from "@oh-my-opencode/senpi-desktop-protocol";
+import { DesktopEngineRpcError } from "@oh-my-opencode/senpi-desktop-service";
 import {
 	actionsOf,
 	actionsScript,
@@ -19,6 +21,7 @@ interface StepOutcome {
 	readonly status: "success" | "error";
 	readonly code?: string;
 	readonly message?: string;
+	readonly permission?: PermissionDeniedData;
 }
 
 interface ActionsOutcome {
@@ -63,8 +66,10 @@ export function createComputerActionsTool(deps: ComputerToolDeps) {
 				result = await runComputer(deps, context, { code, readOnly, timeoutSeconds }, signal);
 			} catch (error) {
 				if (!(error instanceof Error)) throw error;
-				const reason = Reflect.get(error, "reason") ?? Reflect.get(error, "code") ?? error.name;
-				const failure = computerFailure(String(reason), error.message, stopHotkey);
+				const data = error instanceof DesktopEngineRpcError && error.data !== null && "code" in error.data
+					? error.data : undefined;
+				const reason = data?.code ?? Reflect.get(error, "reason") ?? Reflect.get(error, "code") ?? error.name;
+				const failure = computerFailure(String(reason), error.message, stopHotkey, data?.permission);
 				return { content: [{ type: "text", text: failure.message }], details: { value: failure }, isError: true };
 			}
 			const outcome = result.details.value;
@@ -76,8 +81,10 @@ export function createComputerActionsTool(deps: ComputerToolDeps) {
 				const text = `${outcome.steps.length} action(s) done: ${outcome.steps.map((step) => step.action).join(", ")}.`;
 				return { ...result, content: [...images, { type: "text", text }] };
 			}
-			const failure = computerFailure(failed.code ?? "Error", failed.message ?? "action failed", stopHotkey);
-			const text = `Action ${failed.index + 1} (${failed.action}) failed. ${failure.message}`;
+			const failure = computerFailure(failed.code ?? "Error", failed.message ?? "action failed", stopHotkey, failed.permission);
+			const text = `Action ${failed.index + 1} (${failed.action}) failed. ${
+				failure.permission === undefined ? failure.message : JSON.stringify(failure)
+			}`;
 			return {
 				content: [...images, { type: "text", text }],
 				details: { ...result.details, value: { ...outcome, failure } },

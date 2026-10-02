@@ -82,6 +82,14 @@ export function createDesktop() {
 		const target = params?.target;
 		if (inputError !== undefined && (POINTER_METHODS.has(method) || method === "typeText" || method === "keyChord")) {
 			const failure = error(INPUT_ERROR_RPC[inputError] ?? -32013, inputError, `input refused: ${inputError}`);
+			if (inputError === "PermissionDenied") {
+				failure.error.data.permission = {
+					permission: "accessibility",
+					settingsUrl: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+					app: "QA App",
+					relaunchRequired: true,
+				};
+			}
 			return { ...failure, notifications: [audit(method, target ?? "desktop", null, inputError)] };
 		}
 		if (POINTER_METHODS.has(method)) {

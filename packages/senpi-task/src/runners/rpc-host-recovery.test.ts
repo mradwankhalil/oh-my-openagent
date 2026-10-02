@@ -88,11 +88,14 @@ describe("RpcHostRunner transport recovery", () => {
     for (const { client } of served) await client.detach()
   })
 
-  test("#given a reattached child whose continuation prompt times out #when the new host never answers it #then the turn fails as an undelivered prompt and no rejection escapes (omo#9093)", async () => {
+  test("#given a reattached child whose continuation times out #when recovery cannot deliver #then it reports lost and settles the turn without reporting resumed (omo#9403)", async () => {
+    const failureMessage = "Timeout waiting for response to prompt. Stderr: "
     // given - the client the runner creates for the new host never answers a prompt
     const host = await fakeHost()
     let created = 0
+    const recoveryOutcomes: string[] = []
     const runner = runnerOver(host, {
+      shardEvents: { onReattachOutcome: (info) => recoveryOutcomes.push(info.outcome) },
       ...NO_WAIT,
       createClient: (socketPath) => {
         const client = new HostSessionClient({ socketPath, ports: { probeProtocolInfo: () => host.probeProtocolInfo() } })
@@ -101,7 +104,7 @@ describe("RpcHostRunner transport recovery", () => {
           const send = client.send.bind(client)
           client.send = (command) =>
             command.type === "prompt"
-              ? Promise.reject(new Error("Timeout waiting for response to prompt. Stderr: "))
+              ? Promise.reject(new Error(failureMessage))
               : send(command)
         }
         return client
@@ -125,8 +128,9 @@ describe("RpcHostRunner transport recovery", () => {
       // then
       expect(outcome).toMatchObject({
         status: "error",
-        failure: { kind: "child-prompt-failed", message: "Timeout waiting for response to prompt. Stderr: " },
+        failure: { kind: "child-prompt-failed", message: failureMessage },
       })
+      expect(recoveryOutcomes).toEqual(["lost"])
       expect(unhandled).toEqual([])
       expect(handle.exitOutcome()).toBeUndefined()
       await handle.terminate()

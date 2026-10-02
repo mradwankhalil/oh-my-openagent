@@ -34,7 +34,7 @@ export const KNOWN_MODELS = Object.freeze({
   "bailian-coding-plan": Object.freeze(["qwen3.6-flash"]),
   "chatgpt-subscription": Object.freeze([
     "gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-luna-fast", "gpt-6-sol",
-    "gpt-6-sol-fast",
+    "gpt-6-sol-fast", "gpt-6.1-sol", "gpt-6.1-sol-fast",
   ]),
   "claude-sdk-oauth": Object.freeze([
     "claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5",
@@ -52,11 +52,11 @@ export const KNOWN_MODELS = Object.freeze({
   moonshotai: Object.freeze(["kimi-k3"]),
   openai: Object.freeze([
     "gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-luna-fast", "gpt-6-sol",
-    "gpt-6-sol-fast",
+    "gpt-6-sol-fast", "gpt-6.1-sol", "gpt-6.1-sol-fast",
   ]),
   "openai-codex": Object.freeze([
     "gpt-5.6-luna-fast", "gpt-5.6-sol", "gpt-5.6-sol-fast", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-luna-fast", "gpt-6-sol",
-    "gpt-6-sol-fast",
+    "gpt-6-sol-fast", "gpt-6.1-sol", "gpt-6.1-sol-fast",
   ]),
   opencode: Object.freeze([
     "claude-fable-5", "claude-fable-5-1", "claude-opus-4-6", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "gemini-3.1-pro",
@@ -70,15 +70,15 @@ export const KNOWN_MODELS = Object.freeze({
   vercel: Object.freeze([
     "claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "deepseek-v4-flash",
     "deepseek-v4-pro", "gemini-3.1-pro", "gemini-3.6-flash", "glm-5.2", "gpt-5.6-sol",
-    "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "grok-4.6", "kimi-k3", "mimo-v2.5-pro", "minimax-m2.7",
+    "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "grok-4.6", "kimi-k3", "mimo-v2.5-pro", "minimax-m2.7",
     "minimax-m3", "qwen3.6-flash",
   ]),
   xai: Object.freeze(["grok-4.20-0309-non-reasoning", "grok-4.6", "grok-4.7"]),
-  xiaomi: Object.freeze(["mimo-v2.5-pro", "mimo-v2.6-pro"]),
+  xiaomi: Object.freeze(["mimo-v2.5-pro", "mimo-v2.6-flash", "mimo-v2.6-pro"]),
   // Engine Z.AI ids. `zai-coding-plan` is the OpenCode id: kept so older sessions still export
   // instead of collapsing to `custom`. Native chains route through `zai` / `zai-coding-cn` (#8824).
-  zai: Object.freeze(["glm-5.2", "glm-5.3"]),
-  "zai-coding-cn": Object.freeze(["glm-5.2", "glm-5.3"]),
+  zai: Object.freeze(["glm-5.2", "glm-5.3", "glm-5.3-flash"]),
+  "zai-coding-cn": Object.freeze(["glm-5.2", "glm-5.3", "glm-5.3-flash"]),
   "zai-coding-plan": Object.freeze(["glm-5.2", "glm-5.3"]),
 } as const)
 

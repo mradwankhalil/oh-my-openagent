@@ -11,6 +11,7 @@ import type { ManagedRunner, ManagedStartSpec } from "./types"
 // and the parent's auth/model registry, which the string-typed ManagedStartSpec cannot carry.
 export type InProcessSessionContext = {
   readonly agentDir?: string
+  readonly projectTrusted?: boolean
   readonly authStorage?: CreateAgentSessionOptions["authStorage"]
   readonly modelRegistry?: CreateAgentSessionOptions["modelRegistry"]
   readonly modelRuntime?: ChildSpec["modelRuntime"]
@@ -92,6 +93,7 @@ function toChildSpec(spec: ManagedStartSpec, context: InProcessSessionContext): 
     rootSessionId: spec.rootSessionId,
     prompt: spec.prompt,
     ...(context.agentDir !== undefined ? { agentDir: context.agentDir } : {}),
+    ...(context.projectTrusted !== undefined ? { projectTrusted: context.projectTrusted } : {}),
     ...(context.authStorage !== undefined ? { authStorage: context.authStorage } : {}),
     ...(context.modelRegistry !== undefined ? { modelRegistry: context.modelRegistry } : {}),
     ...(context.modelRuntime !== undefined ? { modelRuntime: context.modelRuntime } : {}),
@@ -105,6 +107,7 @@ function toChildSpec(spec: ManagedStartSpec, context: InProcessSessionContext): 
     ...(spec.instructions !== undefined ? { instructions: spec.instructions } : {}),
     ...(spec.toolAllowlist !== undefined ? { toolAllowlist: spec.toolAllowlist } : {}),
     ...(spec.toolDenylist !== undefined ? { toolDenylist: spec.toolDenylist } : {}),
+    ...(spec.includeTaskTools !== undefined ? { includeTaskTools: spec.includeTaskTools } : {}),
     ...(spec.memberScopedToolNames !== undefined ? { memberScopedToolNames: spec.memberScopedToolNames } : {}),
     ...(spec.memberScopedTools !== undefined ? { memberScopedTools: spec.memberScopedTools } : {}),
     ...(spec.kernelTools !== undefined ? { kernelTools: spec.kernelTools } : {}),

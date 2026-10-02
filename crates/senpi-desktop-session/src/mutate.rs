@@ -147,7 +147,7 @@ impl Worker {
         act: impl FnOnce(&mut Self) -> CoreResult<T>,
     ) -> (Result<T, TransactionError>, Option<bool>) {
         if let Err(refused) = self.gate(mutation) {
-            return (Err(TransactionError::Primary(refused.into())), None);
+            return (Err(TransactionError::Primary(refused)), None);
         }
         let guard = match Guard::begin(self, mutation.action, mutation.delivery) {
             Ok(guard) => guard,
@@ -203,7 +203,7 @@ impl Worker {
     /// mid-chord fails the request. Any other action fails only on a stop.
     fn after_action<T>(&mut self, mutation: &Mutation<'_>, result: CoreResult<T>) -> CoreResult<T> {
         let stopped = if mutation.action == MutatingAction::KeyChord {
-            self.gate(mutation).err().map(DesktopError::from)
+            self.gate(mutation).err()
         } else {
             self.safety.supervisor.is_suspended().then(|| {
                 DesktopError::new(
@@ -215,7 +215,7 @@ impl Worker {
         stopped.map_or(result, Err)
     }
 
-    fn gate(&mut self, mutation: &Mutation<'_>) -> Result<(), GateError> {
+    fn gate(&mut self, mutation: &Mutation<'_>) -> CoreResult<()> {
         let policy = StopPolicy {
             allow_host_relay_only: self
                 .options
@@ -233,14 +233,20 @@ impl Worker {
             input_granted,
             latest_frame: self.frames.latest_id(&mutation.target).map(str::to_owned),
         };
-        gate(
+        let result = gate(
             &mutation.action,
             &self.safety.supervisor,
             &policy,
             &view,
             &view,
             mutation.frame_id.map(FrameId::new),
-        )
+        );
+        match result {
+            Err(GateError::PermissionDenied { permission }) => {
+                Err(self.backend()?.permission_denied(permission))
+            }
+            other => other.map_err(DesktopError::from),
+        }
     }
 }
 

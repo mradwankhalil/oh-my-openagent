@@ -17,21 +17,28 @@ export type ChildExitInput = {
  * what Node's `process.kill`/`taskkill /F` become there).
  */
 const WINDOWS_TERMINATION_EXIT_CODE = 1
+const WINDOWS_BUN_REAPER_ADVISORY = "child reaper unavailable under Bun on win32: children orphaned by a terminated worker thread stay as zombies until this"
+
+function hasOnlyWindowsStartupAdvisories(stderr: string): boolean {
+  const lines = stderr.trim().split(/\r?\n/).filter((line) => line.trim().length > 0)
+  return lines.length > 0 && lines.every((line) => line.startsWith(WINDOWS_BUN_REAPER_ADVISORY))
+}
 
 /**
  * Windows has no POSIX signal provenance: an externally terminated child is
  * reported as a plain exit code with `signal === null`, indistinguishable by
  * signal alone from a self-inflicted crash. The one fact that still separates
  * them is stderr - a crashing child writes diagnostics before dying, while a
- * terminated one is stopped mid-flight with an empty buffer. POSIX is
- * unaffected: there a real kill always carries its signal.
+ * terminated one has no crash output. Bun can write a known child-reaper
+ * advisory during startup; that advisory alone is not a crash diagnostic.
+ * POSIX is unaffected: there a real kill always carries its signal.
  */
 function isWindowsExternalTermination(input: ChildExitInput, platform: NodeJS.Platform): boolean {
   return (
     platform === "win32"
     && input.signal === null
     && input.code === WINDOWS_TERMINATION_EXIT_CODE
-    && input.stderr.trim().length === 0
+    && (input.stderr.trim().length === 0 || hasOnlyWindowsStartupAdvisories(input.stderr))
   )
 }
 

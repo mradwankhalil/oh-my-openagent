@@ -620,7 +620,7 @@ describe("createTaskChildPlanner reviewer category routing", () => {
     // then
     const resolved = expectResolved(result)
     expect(resolved.plan.model).toBe("openai/gpt-6-astra")
-    expect(resolved.plan.variant).toBe("xhigh")
+    expect(resolved.plan.variant).toBe("high")
     expect(resolved.plan.fallback_models?.map((record) => record.display)).toContain("anthropic/claude-opus-5-5")
     expect(resolved.plan.instructions).toBe(BUILTIN_AGENTS["omo-native-gate-reviewer"]?.prompt)
     expect(resolved.plan.agentExecutionMode).toBe("in-process")

@@ -229,7 +229,10 @@ export class RpcHostRunner {
         kind: "host_unavailable",
         message: error instanceof Error ? error.message : String(error),
         ...(error instanceof HostUnavailableError
-          ? { reason: error.reason }
+          ? {
+              reason: error.reason,
+              ...(error.launchSpecPath === undefined ? {} : { launch_spec_path: error.launchSpecPath }),
+            }
           : hostUnreachable
             ? { reason: "host_unreachable" as const }
             : {}),

@@ -44,7 +44,7 @@ describe("unspecified-low chain order", () => {
     })
   })
 
-  test("#given the sonnet-5-5 head is absent but every later rung is served #when unspecified-low resolves #then the mimo-v2.6-pro max rung wins", () => {
+  test("#given the sonnet-5-5 head is absent but every later rung is served #when unspecified-low resolves #then the mimo-v2.6-pro high rung wins", () => {
     // given
     const models = FULL_CHAIN_MODELS.filter((model) => model.id !== "claude-sonnet-5-5")
 
@@ -57,7 +57,7 @@ describe("unspecified-low chain order", () => {
     expect(result.spec).toMatchObject({
       provider: "xiaomi",
       modelId: "mimo-v2.6-pro",
-      variant: "max",
+      variant: "high",
     })
   })
 

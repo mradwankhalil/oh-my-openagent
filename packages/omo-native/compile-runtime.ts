@@ -86,10 +86,6 @@ export function runningExecutablePath(
   return platform === "win32" && argv0.toLowerCase().endsWith(".exe") ? argv0 : execPath
 }
 
-export function shouldReexecAfterProvisioning(platform = process.platform): boolean {
-  return platform !== "win32"
-}
-
 export async function embeddedText(file: EmbeddedFile): Promise<string> {
   if (file.text) return file.text()
   if (file.arrayBuffer) return Buffer.from(await file.arrayBuffer()).toString("utf8")

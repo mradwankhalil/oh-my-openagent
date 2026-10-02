@@ -8,8 +8,9 @@ import {
 } from "@oh-my-opencode/senpi-desktop-tool"
 
 import type { ComputerUseEngineErrorCode } from "../telemetry/omo-native-computer-use"
-import { defaultEngineChild } from "./engine-source"
+import { defaultEngineChild, describeEngineSource } from "./engine-source"
 import { engineErrorCode, TrackedDesktopService } from "./engine-status"
+import { describeEnginePermissions } from "./permission-status"
 
 export interface ComputerUseRuntimeOptions {
   readonly settings: ComputerSettings
@@ -38,6 +39,9 @@ export function createComputerUseRuntime(options: ComputerUseRuntimeOptions) {
     service,
     computerTool: createComputerTool(deps),
     computerActionsTool: createComputerActionsTool(deps),
+    /** `/computer status` engine location, read here so the locator stays in this lazy entry. */
+    describeEngineSource,
+    describeEnginePermissions,
   }
 }
 

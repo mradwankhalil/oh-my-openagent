@@ -73,13 +73,13 @@ function setupPlans(input: { additions: { provider: string, key: string }[], add
 
 describe("category coverage from the engine's model list", () => {
   describe("#given an agent dir whose only credential is a zai key", () => {
-    test("#when coverage is computed #then only unspecified-high is usable and nothing is written", async () => {
+    test("#when coverage is computed #then quick and unspecified-high are usable and nothing is written", async () => {
       const { models, coverage, agentDir } = await coverageFor("zai")
 
       expect([...new Set(models.map((model) => model.provider))]).toEqual(["zai"])
-      expect(coverage.usable).toEqual(["unspecified-high"])
+      expect(coverage.usable).toEqual(["quick", "unspecified-high"])
       expect(coverage.unusable.map((gap) => gap.name)).toEqual([
-        "architect", "artistry", "deep-high", "deep-low", "quick", "ultrabrain", "unspecified-low", "visual-engineering", "writing",
+        "architect", "artistry", "deep-high", "deep-low", "ultrabrain", "unspecified-low", "visual-engineering", "writing",
       ])
       expect(readdirSync(agentDir)).toEqual(["auth.json"])
     })

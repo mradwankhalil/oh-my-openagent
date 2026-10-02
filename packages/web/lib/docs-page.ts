@@ -42,7 +42,13 @@ export function splitDocPage(html: string): DocPage {
   const end = html.indexOf(WIDGET_END)
   if (start < 0 || end < start) throw new Error("doc page is missing its install-tabs markers")
 
-  const [afterWidget = "", ...parts] = html.slice(end + WIDGET_END.length).split(/(?=<h2>)/)
+  const { lead: afterWidget, sections } = splitDocSections(html.slice(end + WIDGET_END.length))
+  return { lead: html.slice(0, start), afterWidget, sections }
+}
+
+/** Splits a compiled standalone doc page into the text before its first `##` and one section per `##`. */
+export function splitDocSections(html: string): Pick<DocPage, "lead" | "sections"> {
+  const [lead = "", ...parts] = html.split(/(?=<h2>)/)
   const sections = parts.map((part) => {
     const heading = H2.exec(part)
     if (!heading?.[1])
@@ -50,5 +56,5 @@ export function splitDocPage(html: string): DocPage {
     const title = headingText(heading[1])
     return { id: headingId(title), title, html: part }
   })
-  return { lead: html.slice(0, start), afterWidget, sections }
+  return { lead, sections }
 }

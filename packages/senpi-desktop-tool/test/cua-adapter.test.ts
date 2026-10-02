@@ -81,7 +81,12 @@ describe("computer_actions (gajae-code enforcement invariants)", HANG_GUARD, () 
 
 		// Then
 		expect(failureCode(result)).toBe("COMPUTER_PERMISSION_REQUIRED");
-		expect(textOf(result)).toContain("Grant Screen Recording and Accessibility");
+		expect(Reflect.get(result.details.value ?? {}, "failure")).toMatchObject({
+			permission: "accessibility",
+			settingsUrl: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+			app: "QA App",
+			relaunchRequired: true,
+		});
 	});
 
 	it("display-stale: pointer input without a current frame is COMPUTER_DISPLAY_STALE", async () => {

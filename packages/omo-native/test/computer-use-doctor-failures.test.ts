@@ -13,7 +13,7 @@ const roots: string[] = []
 // A fixture engine is a script, and Windows cannot execute a script as a binary (EFTYPE), so the tests start
 // it through the running runtime; the production launcher executes the located binary directly.
 const runEngineScript: EngineLauncher = (enginePath, args, env) =>
-  spawn(process.execPath, [enginePath, ...args], { stdio: "pipe", windowsHide: true, env })
+  spawn(process.execPath, [enginePath, ...args], { stdio: "pipe", windowsHide: true, detached: true, env })
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })

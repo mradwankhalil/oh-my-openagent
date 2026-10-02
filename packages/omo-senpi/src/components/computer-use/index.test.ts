@@ -254,7 +254,7 @@ describe("computer-use component", () => {
 
     // then
     expect(engine.methods).toEqual([])
-    expect(await runCommand(pi, "status")).toEqual([expect.stringContaining("engine: not started\nprelude: inactive")])
+    expect(await runCommand(pi, "status")).toEqual([expect.stringMatching(/engine: not started \([^\n]+\)\nprelude: inactive/)])
   })
 
   test("#given an active session #when /computer off runs #then the engine session closes and the tool leaves the active set", async () => {

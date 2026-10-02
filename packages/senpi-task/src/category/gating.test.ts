@@ -196,7 +196,7 @@ describe("category activation gating", () => {
       expect(low.availableCategories).not.toContain("deep-high")
     })
 
-    test("#when the registry offers gpt-6-astra alone #then deep-high resolves at xhigh and deep-low stays unavailable", () => {
+    test("#when the registry offers gpt-6-astra alone #then deep-high resolves at high and deep-low stays unavailable", () => {
       // given
       const models = registry([model("openai", "gpt-6-astra")])
 
@@ -208,7 +208,7 @@ describe("category activation gating", () => {
       if (result.kind !== "resolved") throw new Error("Expected resolved")
       expect(result.spec.provider).toBe("openai")
       expect(result.spec.modelId).toBe("gpt-6-astra")
-      expect(result.spec.variant).toBe("xhigh")
+      expect(result.spec.variant).toBe("high")
       expect(result.availableCategories).toContain("deep-high")
       expect(result.availableCategories).not.toContain("deep-low")
       expect(resolveCategory("deep-low", {}, models).kind).toBe("model_unavailable")

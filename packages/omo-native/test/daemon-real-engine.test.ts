@@ -22,6 +22,9 @@ const LAUNCHER = join(PACKAGE_ROOT, "bin", "omo.js")
 const LAUNCH_SPEC = resolve(PACKAGE_ROOT, "..", "omo-senpi", "plugin", "daemon-launch-spec.json")
 const roots: string[] = []
 const ownedPids = new Set<number>()
+// Headroom over any single status spawn, so the observing reads land inside the idle window on a loaded runner.
+const OBSERVED_IDLE_EXIT_MS = 8_000
+const REQUIRED_REACHABLE_READS = 2
 
 setDefaultTimeout(30_000)
 
@@ -74,6 +77,11 @@ function ensureShard(socket: string, env: NodeJS.ProcessEnv) {
 
 function runStatus(env: NodeJS.ProcessEnv) {
   return run("node", [LAUNCHER, "daemon", "status", "--json"], env)
+}
+
+function statusSawReachableShard(env: NodeJS.ProcessEnv): boolean {
+  const payload = JSON.parse(runStatus(env).stdout) as { endpoints: readonly { reachable: boolean }[] }
+  return payload.endpoints.some((endpoint) => endpoint.reachable)
 }
 
 function childPidOf(parentPid: number): number {
@@ -209,26 +217,40 @@ if (process.platform !== "win32") {
       })).rejects.toThrow("daemon status changed state")
     })
 
-    test("#given a short idle shard #when status json polls once per second #then observing reads do not keep it alive", () => {
+    test("#given a short idle shard #when status reads keep arriving #then observing reads do not keep it alive", () => {
       const { socket, env } = sandbox()
       const supervisorPid = ensureShard(socket, {
         ...env,
-        SENPI_RPC_HOST_IDLE_EXIT_MS: "3000",
+        SENPI_RPC_HOST_IDLE_EXIT_MS: String(OBSERVED_IDLE_EXIT_MS),
       })
-      const startedAt = Date.now()
-      let polls = 0
-      while (Date.now() - startedAt < 10_000) {
-        const status = runStatus(env)
-        polls += 1
-        if (status.exitCode === 3 && !pidAlive(supervisorPid)) break
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_000)
+
+      let reachableReads = 0
+      while (reachableReads < REQUIRED_REACHABLE_READS) {
+        if (!pidAlive(supervisorPid)) {
+          throw new Error(`shard exited after ${reachableReads} of ${REQUIRED_REACHABLE_READS} status reads that saw it reachable`)
+        }
+        if (statusSawReachableShard(env)) reachableReads += 1
       }
 
-      expect(polls).toBeGreaterThanOrEqual(3)
-      expect(Date.now() - startedAt).toBeLessThan(10_000)
-      expect(pidAlive(supervisorPid)).toBe(false)
+      // The supervisor is detached by `host ensure`, so there is no exit event to await: it is watched by pid.
+      // The backoff between reads only limits spawn load on a busy runner; it is not a timing assertion, and the
+      // reads keep arriving well inside the idle window.
+      const exitDeadline = Date.now() + OBSERVED_IDLE_EXIT_MS * 3
+      let readsAwaitingExit = 0
+      let backoffMs = 100
+      while (pidAlive(supervisorPid)) {
+        if (Date.now() > exitDeadline) {
+          throw new Error(`shard pid ${supervisorPid} still alive after ${readsAwaitingExit} more status reads; observing reads must not reset its idle timer`)
+        }
+        runStatus(env)
+        readsAwaitingExit += 1
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(backoffMs, Math.max(0, exitDeadline - Date.now())))
+        backoffMs = Math.min(backoffMs * 2, 500)
+      }
+
+      expect(reachableReads).toBe(REQUIRED_REACHABLE_READS)
       ownedPids.delete(supervisorPid)
-    })
+    }, OBSERVED_IDLE_EXIT_MS * 6)
   })
 }
 

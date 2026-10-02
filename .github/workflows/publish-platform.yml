@@ -155,6 +155,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up Python for packaged eval
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
@@ -472,12 +477,19 @@ jobs:
             # musl binaries cannot run on the glibc runner: alpine container.
             docker run --rm -v "${PWD}:/work" -w /work -e HOME=/tmp/omo-smoke-home \
               alpine:3.21 sh -c "apk add --no-cache libstdc++ >/dev/null && ${BIN} --version" | grep -F "$EXPECTED_VERSION_LINE"
+            # Mount the parent so the driver can rename the source checkout.
+            docker run --rm -v "${PWD}/..:/workspace" -w "/workspace/$(basename "$PWD")" \
+              alpine:3.21 sh -c "apk add --no-cache libstdc++ python3 nodejs procps >/dev/null && node script/qa/omo-native-eval-smoke.mjs ${BIN}"
           }
 
           verify_checksum_and_size_only() {
             # No arm64 Windows runner exists: verify digest and size budget
             # without executing the binary.
-            ( cd .omo/release-binaries && sha256sum -c SHA256SUMS )
+            if [[ "$TARGET" == darwin-* ]]; then
+              ( cd .omo/release-binaries && shasum -a 256 -c SHA256SUMS )
+            else
+              ( cd .omo/release-binaries && sha256sum -c SHA256SUMS )
+            fi
             local size
             size="$(wc -c < "$BIN")"
             if [ "$size" -gt 157286400 ]; then
@@ -495,19 +507,15 @@ jobs:
               pty_smoke
               ;;
             darwin-x64|darwin-x64-baseline)
-              # No x64 macOS runner: Rosetta attempt, tolerated failure.
-              isolate
-              if assert_version_line; then
-                assert_first_run_provisioned
-              else
-                echo "::warning::Rosetta smoke failed for ${TARGET} (tolerated; checksum and size are still enforced by the build)"
-              fi
+              # Cross-compiled Darwin legs are digest/manifest checked, not native eval legs.
+              verify_checksum_and_size_only
               ;;
             linux-x64|linux-x64-baseline)
               # x64 Linux runner: native exec; pty + oldstable-glibc legs on the main target.
               isolate
               assert_version_line
               assert_first_run_provisioned
+              bun script/qa/omo-native-eval-smoke.mjs "$BIN"
               if [ "$TARGET" = "linux-x64" ]; then
                 pty_smoke
                 oldstable_glibc_smoke
@@ -527,6 +535,7 @@ jobs:
               isolate
               assert_version_line
               assert_first_run_provisioned
+              bun script/qa/omo-native-eval-smoke.mjs "$BIN"
               ;;
             windows-arm64)
               # No arm64 Windows runner: digest and size budget only.
@@ -538,6 +547,13 @@ jobs:
               ;;
           esac
         timeout-minutes: 20
+
+      - name: Smoke eval registration in fresh binary
+        if: steps.release-assets.outputs.binary_exists != 'true' && matrix.platform == 'darwin-arm64'
+        run: |
+          bun script/qa/omo-native-eval-smoke.mjs \
+            --binary .omo/release-binaries/omo-darwin-arm64
+        timeout-minutes: 5
 
       - name: Upload release binary artifact
         if: steps.release-assets.outputs.binary_exists != 'true'
@@ -753,6 +769,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Check release assets
         id: release-assets
         env:
@@ -824,6 +848,7 @@ jobs:
                 ;;
             esac
             test -f "${HOME}/.omo/binary-runtime/${OMO_AI_VERSION}/omo"
+            bun script/qa/omo-native-eval-smoke.mjs .omo/release-binaries/omo-linux-arm64
           fi
 
           if [ "$MUSL_EXISTS" != "true" ]; then
@@ -831,6 +856,8 @@ jobs:
             docker run --rm -v "${PWD}:/work" -w /work -e HOME=/tmp/omo-smoke-home \
               alpine:3.21 sh -c "apk add --no-cache libstdc++ >/dev/null && chmod +x .omo/release-binaries/omo-linux-arm64-musl && .omo/release-binaries/omo-linux-arm64-musl --version" \
               | grep -F "$EXPECTED_VERSION_LINE"
+            docker run --rm -v "${PWD}/..:/workspace" -w "/workspace/$(basename "$PWD")" \
+              alpine:3.21 sh -c "apk add --no-cache libstdc++ python3 nodejs procps >/dev/null && node script/qa/omo-native-eval-smoke.mjs .omo/release-binaries/omo-linux-arm64-musl"
           fi
 
       - name: Write job summary

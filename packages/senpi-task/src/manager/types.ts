@@ -54,6 +54,7 @@ export type ManagedStartSpec = {
   // Names of tools the child must NOT get (the agent definition's disallowedTools), applied through
   // senpi's excludeTools so a resumed child never comes back with a wider tool surface.
   readonly toolDenylist?: readonly string[]
+  readonly includeTaskTools?: boolean
   // Names of the member-scoped ToolDefinitions, persisted on spawn_spec so a respawn can re-resolve
   // the executable definitions against the live parent registries.
   readonly memberScopedToolNames?: readonly string[]

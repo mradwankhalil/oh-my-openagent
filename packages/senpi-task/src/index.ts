@@ -66,7 +66,7 @@ export type {
   TaskTransitionResult,
   TokenCoverageStatus,
 } from "./state"
-export { TaskRecordCollisionError, createTaskRecordStore, resolveStateDir } from "./store"
+export { TaskRecordCollisionError, createTaskRecordStore, projectStateKey, resolveProjectStateDirectory, resolveStateDir } from "./store"
 export type {
   ListTaskRecordsResult,
   PersistedTaskEvent,
@@ -161,6 +161,7 @@ export type {
   CreateChildSession,
   DepthPolicy,
   InProcessRunnerOptions,
+  QueuedInputDisposition,
   RunnerFailure,
   RunnerOutcome,
   SharedToolFilterOptions,

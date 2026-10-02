@@ -25,6 +25,8 @@ const KIMI: FakeModel = { provider: "moonshotai", id: "kimi-k3" }
 const GLM: FakeModel = { provider: "zai", id: "glm-5.3" }
 const SOL: FakeModel = { provider: "github-copilot", id: "gpt-6-sol" }
 const SOL_56_COPILOT: FakeModel = { provider: "github-copilot", id: "gpt-5.6-sol" }
+const SOL_61: FakeModel = { provider: "chatgpt-subscription", id: "gpt-6.1-sol" }
+const SOL_61_FAST: FakeModel = { provider: "chatgpt-subscription", id: "gpt-6.1-sol-fast" }
 const SOL_FAST: FakeModel = { provider: "chatgpt-subscription", id: "gpt-6-sol-fast" }
 const ASTRA: FakeModel = { provider: "chatgpt-subscription", id: "gpt-6-astra" }
 const UNRELATED: FakeModel = { provider: "example", id: "nothing-in-any-chain" }
@@ -198,6 +200,30 @@ describe("createModelProfileComponent", () => {
     expect(pi.sessionThinkingLevels).toEqual(["medium"])
   })
 
+  test("#given unset with GPT-6.1 Sol and GPT-6 Sol connected ahead of GLM #when the session starts #then gpt-6.1-sol medium is applied", async () => {
+    const { pi, start } = harness({}, [SOL, SOL_61, GLM, UNRELATED])
+
+    await start(STARTUP)
+
+    expect(pi.sessionModels).toEqual([SOL_61])
+    expect(pi.sessionThinkingLevels).toEqual(["medium"])
+    expect(pi.messages[0]?.message).toMatchObject({
+      details: { profile: "recommended", model: "chatgpt-subscription/gpt-6.1-sol", reasoning: "medium" },
+    })
+  })
+
+  test("#given unset with only Copilot GPT-6 Sol and GLM #when the session starts #then the gpt-6-sol medium fallback rung is applied", async () => {
+    const { pi, start } = harness({}, [SOL, GLM, UNRELATED])
+
+    await start(STARTUP)
+
+    expect(pi.sessionModels).toEqual([SOL])
+    expect(pi.sessionThinkingLevels).toEqual(["medium"])
+    expect(pi.messages[0]?.message).toMatchObject({
+      details: { profile: "recommended", model: "github-copilot/gpt-6-sol", reasoning: "medium" },
+    })
+  })
+
   test("#given daily-normal and Opus only through a gateway #when the session starts #then the lane skips the gateway for its next listed rung", async () => {
     const { pi, start } = harness({ model_profile: "daily-normal" }, [GATEWAY_OPUS, CODING_KIMI])
 
@@ -250,6 +276,26 @@ describe("createModelProfileComponent", () => {
     expect(appliedContent(pi)).toContain("anthropic/claude-fable-5-1 xhigh")
   })
 
+  test("#given geeky-normal with GPT-6.1 Sol Fast and GPT-6.1 Sol connected #when the session starts #then gpt-6.1-sol-fast medium is applied", async () => {
+    const { pi, start } = harness({ model_profile: "geeky-normal" }, [SOL_61, SOL_61_FAST, SOL_56_COPILOT, UNRELATED])
+
+    await start(STARTUP)
+
+    expect(pi.sessionModels).toEqual([SOL_61_FAST])
+    expect(pi.sessionThinkingLevels).toEqual(["medium"])
+    expect(appliedContent(pi)).toContain("chatgpt-subscription/gpt-6.1-sol-fast medium")
+  })
+
+  test("#given geeky-normal without the GPT-6.1 Sol Fast tier #when the session starts #then plain gpt-6.1-sol medium is applied", async () => {
+    const { pi, start } = harness({ model_profile: "geeky-normal" }, [SOL_56_COPILOT, SOL_61, UNRELATED])
+
+    await start(STARTUP)
+
+    expect(pi.sessionModels).toEqual([SOL_61])
+    expect(pi.sessionThinkingLevels).toEqual(["medium"])
+    expect(appliedContent(pi)).toContain("chatgpt-subscription/gpt-6.1-sol medium")
+  })
+
   test("#given geeky-normal with only Copilot GPT-5.6 Sol #when the session starts #then gpt-5.6-sol medium is applied", async () => {
     const { pi, start } = harness({ model_profile: "geeky-normal" }, [SOL_56_COPILOT, SOL, UNRELATED])
 
@@ -260,14 +306,14 @@ describe("createModelProfileComponent", () => {
     expect(appliedContent(pi)).toContain("github-copilot/gpt-5.6-sol medium")
   })
 
-  test("#given geeky-heavy #when the session starts #then astra xhigh is applied", async () => {
+  test("#given geeky-heavy #when the session starts #then astra high is applied", async () => {
     const { pi, start } = harness({ model_profile: "geeky-heavy" }, [ASTRA, SOL_FAST])
 
     await start(STARTUP)
 
     expect(pi.sessionModels).toEqual([ASTRA])
-    expect(pi.sessionThinkingLevels).toEqual(["xhigh"])
-    expect(appliedContent(pi)).toContain("chatgpt-subscription/gpt-6-astra xhigh")
+    expect(pi.sessionThinkingLevels).toEqual(["high"])
+    expect(appliedContent(pi)).toContain("chatgpt-subscription/gpt-6-astra high")
   })
 
   test("#given a literal provider/model #when the session starts #then that pin is applied for the session", async () => {

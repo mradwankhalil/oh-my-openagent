@@ -1,3 +1,247 @@
+## 2026-10-01 - The gateway hook's integrity check and its tests agree on Windows paths (follow-up to #9243)
+
+`verifyGatewayPackage` (`bin/lib/gateway.js`) resolves the package directory and its host entry with
+`realpathSync.native` instead of `realpathSync`. On Windows, `realpathSync` can keep an 8.3 short name
+(`C:\Users\RUNNER~1\...`) while the module loader hands back the long name for the same directory. That made the
+two sides of the containment check spell one directory two ways, which can falsely refuse a valid install reached
+through a short path. `.native` returns the canonical long name on both sides, and on POSIX it changes nothing. The test
+fixtures (`test/gateway.test-support.ts`) create their temp roots with `realpathSync.native` too, so the paths they
+expect match what the hook reports. That fixes the eight Windows-only failures in `test/gateway.test.ts` and
+`test/gateway-integrity.test.ts` on dev.
+
+## 2026-10-01 - A `bun add -g` update leaves an `omo` that starts without node (#9293)
+
+`bun add -g omo-ai` links `<bun root>/bin/omo` (and `install/global/node_modules/.bin/omo`) back to `bin/omo.js`,
+whose `#!/usr/bin/env node` cannot start where node is not on PATH: a launchd job, cron, a bun-only machine, or node
+only through nvm. The bun launcher shim that avoids node was only written back by a launch under node, so on such a
+machine `omo` failed with `env: node: No such file or directory` (exit 127) after every update and could not repair
+itself. `ensureBunBinShim` (`bin/lib/bun-bin-shim.js`) no longer skips when it runs on bun, and postinstall
+(`bin/senpi-patch.mjs`) calls it first, before the engine preparation. Bun links the bin and then runs a trusted
+postinstall, on bun itself when node is missing, so the shim is back before anything launches `omo`. A launch on bun
+(`bun .../bin/omo.js`, the shim itself) also repairs a stock link it finds, at the cost of the same lstat and small
+read a node launch already pays. Outside a POSIX bun-global install the call is the same no-op as at launch. A blocked
+(untrusted) postinstall still leaves the stock link until the next launch under node or bun.
+
+## 2026-09-30 - Eval release smoke covers every executable target (#9291, follow-up to #9250)
+
+### What changed
+
+The packaged-binary RPC smoke now verifies JavaScript and Python arithmetic, cell listing,
+and exactly one real file read through the before/after tool hooks. Its fixture contains a
+random marker; execution runs while the source checkout is renamed, then shuts down the
+isolated task hosts and checks for surviving processes and sockets. The release workflow
+executes it on nine native targets, provisioning Python, Node and process tools inside each
+of the three Alpine musl legs. Seven legs smoke before upload; the linux-arm64 and
+linux-arm64-musl smokes run after build in parallel with the npm platform publish and fail
+the reusable workflow result. Cross-compiled Darwin x64 and Windows arm64 retain digest/manifest
+coverage. Twelve platform manifests are compared against the derived codemode sidecar set.
+Every wasm in the runtime closure also has a required file entry. The build-only
+`OMO_SIDECAR_EXCLUDE` fixture permits a missing-package RED smoke without a dependency list.
+
+### Why
+
+#9250 restored eval registration but tested only one JavaScript cell on Darwin arm64.
+It could not detect a broken Python bridge, host tool pipeline, missing target assets,
+or a release leg bypassing the smoke.
+
+### Why an extension could not handle it
+
+These checks exercise the compiled payload inside the release workflow. An extension
+cannot repair an asset absent from that payload or enforce a gate on another release leg.
+
+### Expected merge conflict zones
+
+The engine-sidecar resolver, binary staging fixture, and release smoke workflow.
+
+## 2026-09-30 - The gateway host receives omo's plugin root and the thread SDK URL (#9243)
+
+`runGatewayCommand` and the doctor call into the installed gateway now also pass `pluginRoot`, omo's staged plugin
+payload (`<packageRoot>/plugin`, from `package-paths.js` as doctor resolves it), and `threadSdkUrl`, the `file:` URL of
+`<pluginRoot>/runtime/thread-sdk/sdk.js`, so the gateway neither derives the install from `argv[1]` nor knows the
+payload layout. Both come from the hook's own module URL, so a symlinked install hands over the real install's paths.
+The SDK file ships with the thread SDK (#9222); until then the URL names a file that does not exist yet, and omo does
+not check it, so `omo gateway` behaves as before. `test/gateway.test.ts` covers the command (plain and symlinked
+install) and the doctor call; each case fails with its field removed.
+
+## 2026-09-30 - The gateway hook verifies the installed package before importing it (#9243)
+
+Before `bin/lib/gateway.js` imports `@oh-my-opencode/omo-gateway/host`, `verifyGatewayPackage` finds the package's
+`package.json` on the same resolver search paths the import walks and refuses the package, as `broken` with a reason that
+names its directory, unless the manifest `name` is exactly `@oh-my-opencode/omo-gateway`, it declares
+`omoGateway.hostContract` equal to 1 (the runtime `HOST_CONTRACT_VERSION` check stays), and the host entry the import
+resolves stays inside the package directory once symlinks are resolved on both sides. A refused package never runs:
+`omo gateway` prints the reason and exits 1, the doctor gateway row is `FAIL`. No package directory is still `missing`, and
+nothing changes for an install without the package. `test/gateway-integrity.test.ts` (5 cases) covers a foreign name, a
+missing and a mismatched manifest contract, a host entry symlinked out of the package, and a verified package reached
+through a symlinked package directory; each fails with its check removed.
+
+## 2026-09-30 - `omo gateway` and the doctor gateway rows load a separately installed gateway package (#9243)
+
+`bin/lib/gateway.js` is a hook, not a gateway: `omo gateway <args>` imports `@oh-my-opencode/omo-gateway/host` by bare
+name from omo's own install (the resolution the gateway itself uses for adapter packages), checks its
+`HOST_CONTRACT_VERSION` (1), and calls its `runGatewayCommand` with argv, stdio, env, cwd, the canonical agent dir,
+home and the argv that relaunches `omo gateway connect`. Without the package it prints one line, `omo gateway: the omo
+gateway is not installed: ...`, and exits 1; a package that fails to load or speaks another contract is named as
+such and also exits 1. `omo doctor` adds gateway rows only when the user config (`~/.omo/omo.jsonc` or `omo.json`) sets
+`gateway` at its top level or in `[native]`: one `WARN gateway:` row when the package is missing, `FAIL gateway:` when
+it is broken, otherwise `PASS gateway: installed` followed by the package's own rows, and a package `FAIL` row fails
+doctor. Without a `gateway` section nothing is imported and doctor output is unchanged. The launcher imports the hook
+lazily, so the startup path does not load it. `omo-config-core` accepts `gateway` as an open object in the root, layer
+and harness-block schemas so a config carrying it loads without an unknown-key diagnostic; omo never reads it.
+`test/gateway.test.ts` (9 cases) drives a packaged copy of `bin/` with and without a fixture package installed beside it;
+`omo-config-core` `src/schema/gateway.test.ts` (3 cases) fails on dev.
+
+## 2026-09-30 - The compiled binary hands a downloaded Claude Code to the engine at startup (#9276)
+
+`compile-entry.ts` calls `applyCachedClaudeCode` (omo-senpi `claude-code/index.ts`) right after
+`remapSenpiEnvironment`, so a Claude Code downloaded in an earlier session reaches the engine through
+`CLAUDE_CODE_EXECUTABLE` before its startup availability probe, every turn's auth check, and task children. An explicit
+`CLAUDE_CODE_EXECUTABLE` or `claude` on PATH still wins, and nothing happens before the first download.
+
+## 2026-09-30 - The standalone binary downloads Claude Code on the first anthropic-subscription turn (#9262)
+
+A release binary embeds no Claude Code executable, because the platform package's `claude` alone (226 MB on
+darwin-arm64) exceeds the 150 MB binary budget. With no `claude` on PATH, every anthropic-subscription turn failed with
+`Claude Code executable not found`, while an npm install gets it from the SDK's optional platform package. The build now
+stages `claude-code-pin.json` (`script/claude-code-pin.ts`): the platform package the engine's claude-agent-sdk pins,
+and its sha512 integrity from `bun.lock`. The new omo-senpi `claude-code` component reads that pin beside the
+provisioned runtime. On the first turn whose model is anthropic-subscription, it downloads that exact tarball
+(`acquire.ts`), checks the integrity, extracts only the executable into
+`<runtime>/claude-code/<package>/<version>/` with an atomic rename, and hands it to the engine through
+`CLAUDE_CODE_EXECUTABLE` before the turn starts. A notice is shown while it downloads. With no network, the error names
+the alternatives. An explicit `CLAUDE_CODE_EXECUTABLE` or `claude` on PATH wins and nothing is downloaded. An npm
+install has no pin, so the component does nothing there. `omo doctor` on the binary reports the executable
+(`claude-code-doctor.ts`): present, on PATH, overridden, or not downloaded yet.
+
+## 2026-09-30 - The standalone binary reports and reaps its own stale engines (#9252 follow-up)
+
+`omo doctor --reap <pid>` on the standalone binary printed the regular report and reaped nothing, because the compiled
+doctor never read its arguments. The stale-engine report could not see a binary engine either: `ENGINE_MARKERS` in
+`bin/lib/doctor.js` match only the npm engine paths, and a binary engine runs as
+`~/.omo/binary-runtime/<version>/omo`. `isEngine` now also accepts that executable when it runs a session: a bare
+launch or engine flags. The same executable serving omo's own commands (`doctor`, `setup`, `daemon`, `host`, ...),
+its internal hosts (`--internal-*`) or a bundled script (the LSP daemon) is never an engine, and `--mode` keeps it
+managed. `runCompiledDoctor` takes the doctor arguments and routes `--reap` to `reapStaleEngines`, with the npm
+refusals unchanged, and prints `staleEngineReport`.
+
+## 2026-09-30 - standalone binaries stage codemode's external runtime closure and smoke eval (#9248)
+
+### What changed
+
+The release-binary sidecar resolver now reads codemode's own dependency manifest, excludes direct
+dependencies already supplied by the senpi engine host, and recursively stages every remaining runtime
+dependency under codemode's package-local `node_modules`. The platform release workflow runs a freshly
+built Darwin arm64 binary through an isolated local-provider RPC smoke that requires `eval` to register
+and return `42`. Every Darwin, Linux and Windows target manifest is checked for the same closure.
+
+### Why
+
+OmO 5.1.3 and 5.1.4 copied the codemode package without `@babel/parser`, so codemode failed during
+extension loading and both JavaScript and Python eval disappeared from every standalone binary.
+
+### Why an extension could not handle it
+
+The extension cannot register when its own import graph is incomplete. The dependency closure must be
+present in the compiled binary's provisioned runtime before extension loading begins.
+
+### Expected merge conflict zones
+
+`script/engine-sidecar-sources.ts`, the platform release smoke steps, and sidecar manifest tests.
+
+## 2026-09-30 - The Windows release exe runs from its download folder instead of dying on the pi-pty package version (#7485)
+
+A raw `omo-windows-*.exe` launched from an empty folder provisioned `~/.omo/binary-runtime/<version>/` and then
+ran the engine in-process, because `shouldReexecAfterProvisioning()` was false on win32 since #7447. `process.execPath`
+stayed in the download folder, so every engine lookup beside it failed: the pi-pty loader's `package.json` first, then
+the built-in themes and native prebuilds. `OMO_PACKAGE_DIR` (#7487's superseding fix) covers only the lookups that
+read it. The new `provisioned-handoff.ts` makes every platform hand a launch off to the provisioned executable when it
+is not already that executable: POSIX keeps `execve`, Windows runs it through `runChild` and passes its exit code
+through. The child is told it is the provisioned runtime through `OMO_PROVISIONED_HANDOFF` (the path the parent
+spawned), so it never provisions or re-execs again even if its own executable identity is misreported, the loop that
+made #7445/#7447 turn the handoff off; the marker is removed before the engine starts. While the child runs, the
+Windows parent holds `SIGINT` so Ctrl+C does not return the prompt before the child exits. `compile-entry.ts` only
+calls `planProvisionedLaunch` and `handOffToProvisionedRuntime`. `test/provisioned-handoff.test.ts` compiles a fixture
+that runs the same launch sequence and reads `package.json` beside `process.execPath` like the pi-pty loader, copies it
+into an empty download folder with an isolated home, and runs it three times (first launch, already provisioned, the
+provisioned exe directly); on the Windows CI shard it failed before this change and passes after it.
+
+## 2026-09-30 - The standalone binary runs the same omo setup import and omo doctor sections as the npm launcher (#9252)
+
+The compiled entry (`compile-entry.ts`) answered `omo setup` with the inventory table only (`printSetupReport`), while
+`bin/omo.js` runs `runSetup`: summary, consent and the import. Its hand-kept `runCompiledDoctor` never received the
+`Update:` line, the computer-use section (#8939) or the task-category coverage section (#8858). `setup` now dispatches
+to `runSetup`. The doctor moved to `compiled-doctor.ts` and prints those three sections plus the settings and memory-identity lines
+(`warningsForSettings`, `transientMemoryReport`, now exported from `bin/lib/doctor.js`); a computer-use `FAIL` sets
+exit code 1, as on npm. The helpers behind the new lines load their runtime from the npm layout, which the binary does
+not have, and they fail open, so wiring them in alone would print nothing. `compiled-diagnostic-runtime.ts` gives them
+the provisioned `plugin/runtime/category-coverage/index.js` and the engine modules compiled into the binary (relative
+literal imports so bun traces them). `computer-use-doctor.js` accepts `packageRoot` and `version`, and
+`setup-import.js` forwards `loadCoverageEngine`. `setup-credentials.js` and `setup-opencode-providers.js` import
+`provider-map.json` statically instead of reading it beside the module URL, which the binary cannot serve.
+Supersedes #7489, which re-dispatched `setup` on a base whose `setup-import.js` has since been rewritten.
+
+## 2026-09-29 - A umask 002 install no longer breaks every process child and team; a refused launch spec names itself (#9208)
+
+npm and bun extract `plugin/daemon-launch-spec.json` with the installing user's umask, so under `umask 002` (the Ubuntu
+default for users with a private group) it lands 0664. The task host refuses a group- or world-writable spec
+(`launch_spec_insecure`, unchanged), so every process-mode child and every `team_create` failed. New
+`bin/lib/launch-spec-mode.js` `normalizeLaunchSpecMode` removes only the group and world write bits, only from a regular
+file owned by the current user, using `lstat` so a symlink is never followed: a link or a file owned by another user is
+left as it is, and the host still refuses it. `engine-prepare.js` `preparePluginLaunchSpec` runs it fail-open (a failed
+chmod warns with `chmod 644 <path>` and never blocks the launch), and the launcher calls it on every launch through
+`preparedSenpi()` and before `omo doctor`, not behind the engine stamp, because reinstalling omo-ai rewrites the plugin
+while the engine keeps its stamp. postinstall (`senpi-patch.mjs`) runs it too, for installs whose scripts run. On
+Windows it does nothing: the host does not check modes there. The compiled binary needs no normalization, since its
+runtime extraction already sets each file to the mode recorded in its manifest (0644 for the spec).
+`launchSpecDoctorLines` applies the host's own rule (following symlinks, as the reader does) and `omo doctor`, npm and
+compiled, prints `FAIL launch spec: launch_spec_insecure: <path> ...` with `chmod 644 <path>` (or the ownership fix)
+and exits 1 when the spec would still be refused.
+
+## 2026-09-29 - `omo update --help` prints usage and an unknown flag is a usage error instead of an update (#9207)
+
+`isSelfUpdate()` routes `update` to the launcher whenever every argument after it is a flag or a self/senpi/omo target,
+and `runSelfUpdate()` only knew `--dry-run` and `--print`, so `omo update --help`, `-h` or a mistyped flag such as
+`--forse` ran the package-manager install. The routing and a new `updateUsageAnswer()` now live in
+`bin/lib/update-args.js`, shared by `launcher.js`, `self-update.js`, `compile-entry.ts` and `compiled-update.ts`.
+`--help` / `-h` print the `omo update` usage and exit 0; any other flag besides `--dry-run`, `--print` and the documented
+`--self` exits 2 with `omo update: unknown option <flag>` on stderr. Both answers come before the registry lookup, so
+nothing is fetched or installed. The compiled binary answers the same way before its GitHub release lookup; that path
+only ever prints the replace command, and its `--dry-run` / `--print` output is unchanged. Plain `omo update`,
+`--dry-run`, `--print`, `--self` and the self/senpi/omo targets behave as before, and `update --extensions` /
+`update --models` still go to the engine. `test/self-update-usage.test.ts` and `test/compiled-update-usage.test.ts`
+cover both paths with installer and release-lookup spies; on dev 16 of their 33 cases failed, all of them the help and
+unknown-flag cases.
+
+## 2026-09-29 - `omo update` installs the exact published version and fails when the install did not move (#9198)
+
+On a Bun-global install, `omo update` could exit 0 with the old version still installed: `updateTarget()` spawned the
+unpinned `bun add -g omo-ai` (or `omo-ai@beta`), and `runSelfUpdate()` counted any manager exit 0 as success, so
+`omo 5.1.1 -> 5.1.1` read as an update. `runSelfUpdate()` now reads the running version's channel dist-tag (`latest` or
+`beta`) through the same registry lookup `omo doctor` uses for `Latest`, which moved from `doctor.js` into
+`bin/lib/npm-dist-tags.js`, and `updateTarget()` takes that version and installs the exact spec for every layout it
+handles: `bun add -g omo-ai@<version>` for Bun global and legacy Bun home-root installs, `npm i -g omo-ai@<version>` for
+npm. Already on that version, `omo update` says `omo <version> is up to date` and installs nothing. After a manager exit
+0 it re-reads the installed version; if it is not the target it prints `omo is still <version>; <target> is published`
+with the exact retry command and exits 1. `--dry-run` and `--print` show the pinned command. When the registry cannot be
+reached it says it could not confirm the version and runs the unpinned channel spec as before. The `INFO Update:` line
+of `omo doctor` and the engine's update hint keep the unpinned channel spec.
+
+## 2026-09-29 - The launch banner and routine launch notices print without Bun's error color (#8442)
+
+`bin/lib/launcher.js` writes the interactive version banner, the `sibling credentials detected` hint and the `carried forward settings from the legacy ~/.omo layout` notice with `process.stderr.write` instead of `console.error`, and `compile-entry.ts` does the same for `compiledBannerLines`. Under Bun, `console.error` wraps every line in ANSI red on a color terminal, so a healthy start looked like a failure. The lines stay on stderr with the same text; real error lines (`could not adopt legacy state`, the `ulw-loop` refusal) keep `console.error`. Measured on a PTY with `FORCE_COLOR=1` and the pinned engine: dev printed `\e[0m\e[31momo (omo-ai 5.1.2)\e[0m`, this change prints `omo (omo-ai 5.1.2)`, and the color-stripped `omo --help` output is byte-identical (228 lines, exit 0). `test/launcher-banner-color.test.ts` fails on dev and passes here. Contributed by @cynkai.
+
+## 2026-09-29 - `omo daemon` reads its settings through the omo config loader (#9192)
+
+`bin/lib/daemon-config.js` resolves `task.host_engine_policy` and `task.host_idle_exit_ms` (the only two keys `omo daemon`
+reads) through omo-config-core's `loadOmoConfig` (JSONC, `~/.omo/omo.jsonc` or `~/.omo/omo.json` plus project `.omo`
+layers, the same view and precedence the extension's task runner reads), reached from the plain-JS launcher through the new
+staged `plugin/runtime/task-config/index.js` bundle (`task-config-entry.ts`, built by `script/build-omo-native.ts` and
+required by the payload gate). A value set in the documented file is no longer ignored. `<agentDir>/omo.json` is the
+deprecated fallback per key: it supplies a key only when no config layer sets it, and then `omo doctor` prints one
+`WARN task.<key>: read from deprecated <path>; ...` line. The advice never changes behavior when followed: a legacy
+`"never"` policy is told to pass `--no-upgrade` (the config key accepts only `upgrade|fallback`), every other value to move
+to `~/.omo/omo.jsonc`. `--no-upgrade` still wins. A payload without the runtime reads only the legacy file, as before.
+
 ## 2026-09-29 - `omo doctor` names the active config dir and flags edits left in ~/.pi/agent (#9173)
 
 `bin/lib/doctor-pi-config.js` adds two kinds of lines to both doctor paths (`bin/lib/doctor.js` and the compiled

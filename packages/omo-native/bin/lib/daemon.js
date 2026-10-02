@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import {
   parseEngineLine,
@@ -11,6 +11,7 @@ import {
 } from "./daemon-operations.js"
 import { runRollbackPrepare } from "./daemon-rollback.js"
 import { attachLaunchArgs, blockingPause, DAEMON_EXIT, readTimeoutSeconds } from "./daemon-args.js"
+import { readDaemonConfig } from "./daemon-config.js"
 
 export { DAEMON_EXIT } from "./daemon-args.js"
 export { daemonReportLines } from "./daemon-doctor-report.js"
@@ -24,7 +25,7 @@ export { daemonReportLines } from "./daemon-doctor-report.js"
  * Everything that decides WHO serves a socket lives in the engine (`senpi host`): probing an
  * existing host, comparing build ordinals, handing a generation over, refusing when the two sides
  * cannot agree. This wrapper owns three much smaller things, and deliberately nothing else:
- * omo's launch spec is the argv source, omo.json is where the policy comes from, and the caller
+ * omo's launch spec is the argv source, the omo config is where the policy comes from, and the caller
  * gets an exit code it can branch on without reading prose.
  */
 
@@ -59,17 +60,6 @@ function resolvePolicy(args, config) {
   const configured = config?.task?.host_engine_policy
   if (configured === "fallback" || configured === "never" || configured === "upgrade") return configured
   return "upgrade"
-}
-
-/** omo.json is optional and may be hand-edited, so unreadable config must not take the CLI down. */
-function readConfig(agentDir) {
-  const path = join(agentDir, "omo.json")
-  if (!existsSync(path)) return undefined
-  try {
-    return JSON.parse(readFileSync(path, "utf8"))
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -149,7 +139,7 @@ export function runDaemonCommand(args, options) {
     return DAEMON_EXIT.engineRefused
   }
 
-  const config = readConfig(agentDir)
+  const { config } = readDaemonConfig({ pluginRoot, agentDir, env, cwd: options.cwd, loadRuntime: options.loadTaskConfig })
   if (subcommand === "status") {
     const status = runStatus({
       engine,

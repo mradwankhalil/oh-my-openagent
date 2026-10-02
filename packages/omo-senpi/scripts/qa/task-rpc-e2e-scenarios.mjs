@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { mkdirSync, rmSync, watch, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { isolatedChildEnv } from "./sandbox-child-env.mjs"
+import { isolatedChildEnv, sandboxStateDir } from "./sandbox-child-env.mjs"
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const { createSandbox, seedSandbox } = await import(pathToFileURL(join(scriptDir, "drive.mjs")).href)
@@ -78,7 +78,7 @@ export function prepareScenarioSandbox(projectConfig = PROJECT_OMO_CONFIG) {
   mkdirSync(sessionDir, { recursive: true })
   mkdirSync(join(sandbox.cwd, ".omo"), { recursive: true })
   writeFileSync(join(sandbox.cwd, ".omo", "omo.json"), `${JSON.stringify(projectConfig, null, 2)}\n`)
-  const stateDir = join(sandbox.cwd, ".omo", "senpi-task")
+  const stateDir = sandboxStateDir(sandbox)
   mkdirSync(join(stateDir, "tasks"), { recursive: true })
   mkdirSync(join(stateDir, "logs"), { recursive: true })
   return { sandbox, sessionDir, stateDir }
@@ -199,11 +199,12 @@ export async function runKillCheck(senpiBin) {
       // already gone counts as killed
     }
     const errored = await waitForRecord(stateDir, (r) => r.task_id === running.task_id && r.status === "error" && r.killed === true, 15_000)
+    const latest = readRecords(stateDir).find((r) => r.task_id === running.task_id)
     return {
       check: "kill_marks_error_killed_true",
       verdict: errored ? "PASS" : "FAIL",
       ...(errored ? {} : { reason: "kill did not yield status=error killed:true" }),
-      facts: { pid: running.pid, killed: errored?.killed ?? false, error_excerpt: (errored?.error_message ?? "").slice(0, 120) },
+      facts: { pid: running.pid, killed: errored?.killed ?? false, status: latest?.status, recordedKilled: latest?.killed, error_excerpt: (latest?.error_message ?? "").slice(0, 120) },
     }
   } finally {
     await cleanupSenpiHost(parent)

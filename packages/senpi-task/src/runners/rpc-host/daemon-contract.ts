@@ -50,16 +50,24 @@ export type HostUnavailableReason =
   | "ensure_timed_out"
   | "ensure_failed"
   | "host_busy"
+  | "launch_spec_insecure"
 
 export class HostUnavailableError extends Error {
   override readonly name = "HostUnavailableError"
   readonly reason: HostUnavailableReason
   readonly fallbackAllowed: boolean
+  // The refused spec's path, computed by omo itself (never child output), so the public start
+  // failure can name the file and its fix.
+  readonly launchSpecPath?: string
 
-  constructor(reason: HostUnavailableReason, options: { readonly fallbackAllowed: boolean; readonly detail?: string }) {
+  constructor(
+    reason: HostUnavailableReason,
+    options: { readonly fallbackAllowed: boolean; readonly detail?: string; readonly launchSpecPath?: string },
+  ) {
     super(`task daemon unavailable (${reason})${options.detail === undefined ? "" : `: ${options.detail}`}`)
     this.reason = reason
     this.fallbackAllowed = options.fallbackAllowed
+    if (options.launchSpecPath !== undefined) this.launchSpecPath = options.launchSpecPath
   }
 }
 
@@ -77,6 +85,7 @@ export interface LoadedDaemonLaunchSpec {
 export interface TaskDaemonPorts {
   readonly host?: TaskDaemonHostPort
   readonly launchSpec?: LoadedDaemonLaunchSpec
+  readonly launchSpecPath?: string
   readonly idleExitMs?: number
   readonly platform?: NodeJS.Platform
   readonly bunRuntimeAvailable?: boolean
