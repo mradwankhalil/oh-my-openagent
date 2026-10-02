@@ -240,14 +240,14 @@
       "title": "Tool argument rewrites land on the object opencode executes; git env prefix follows the configured shell",
       "commit": "33582bc1967b5a8d4249e52b5772a95090ac5a3b",
       "patch": "local-fixes/patches/17-tool-args-in-place.patch",
-      "pr": null,
+      "pr": "https://github.com/code-yeongyu/oh-my-openagent/issues/9448",
       "why": "opencode 1.18 calls tool.execute.before with { args } and then executes its own args reference; it never reads output.args back. replaceToolArgs did output.args = {...}, so all 12 OMO argument rewrites were silently dropped (a bash call running git --version showed GIT_EDITOR, GIT_PAGER and GIT_TERMINAL_PROMPT unset on 2026-10-02) and the args object was detached for every plugin hook after OMO: the squeez plugin wrapped a copy, so almost no command was squeez-wrapped (canon X-124). The helper now edits in place and only replaces a frozen object. Because the non-interactive env prefix becomes live, the hook reads `shell` from the opencode config so that \"shell\": \"bash\" on Windows gets `export ...;` instead of cmd or PowerShell syntax.",
       "markers": [
         "shellTypeFromConfiguredShell",
         "Object.isFrozen(output.args)"
       ],
       "overlapsWith": [],
-      "orderNote": "Independent of 01-16. The second marker lives in packages/utils/src, which apply.mjs and verify.mjs search since this fix. Not filed upstream yet."
+      "orderNote": "Independent of 01-16. The second marker lives in packages/utils/src, which apply.mjs and verify.mjs search since this fix. Reported upstream as issue #9448 on 2026-10-02 (an issue, not a PR; no PR is open yet)."
     }
   ],
   "externalFixes": [
