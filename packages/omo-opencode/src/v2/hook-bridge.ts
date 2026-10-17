@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 
 import { log } from "../shared/logger"
 import type { AdapterState } from "./adapter-state"
-import { toV1Event } from "./event-shape"
+import { createV1EventShaper, toV1Event } from "./event-shape"
 import { hookMessagesToV1, writeHookMessagesBack } from "./message-shape"
 
 type V2Context = Plugin.Context
@@ -269,8 +269,11 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?: 
   if (eventHandler || autocontinue) {
     void (async () => {
       try {
+        // One shaper per subscription joins each step's started model with its
+        // ended usage before the V1 handlers see it.
+        const shape = createV1EventShaper()
         for await (const raw of ctx.event.subscribe({ signal: controller.signal })) {
-          const event = toV1Event(raw)
+          const event = shape(raw)
           noteRuntimeEvent(state, event)
           if (eventHandler) await safeCall("event", () => eventHandler({ event }))
           await safeCall("compaction.autocontinue", () => continueAfterManualCompaction(ctx, state, event, autocontinue))
