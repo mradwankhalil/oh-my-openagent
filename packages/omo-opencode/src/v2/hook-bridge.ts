@@ -3,6 +3,7 @@ import type { Plugin } from "@opencode/plugin"
 import { log } from "../shared/logger"
 import type { AdapterState } from "./adapter-state"
 import { toV1Event } from "./event-shape"
+import { createSessionOwnership } from "./session-ownership"
 import { hookMessagesToV1, writeHookMessagesBack } from "./message-shape"
 
 type V2Context = Plugin.Context
@@ -269,7 +270,11 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?: 
   if (eventHandler || autocontinue) {
     void (async () => {
       try {
+        // V2 delivers every folder's events to every plugin instance; only the folder that owns
+        // the session tree may run the V1 hooks for it (one retry, not one per warm folder).
+        const ownsSessionEvent = createSessionOwnership(ctx, state)
         for await (const raw of ctx.event.subscribe({ signal: controller.signal })) {
+          if (!(await ownsSessionEvent(raw))) continue
           const event = toV1Event(raw)
           noteRuntimeEvent(state, event)
           if (eventHandler) await safeCall("event", () => eventHandler({ event }))
