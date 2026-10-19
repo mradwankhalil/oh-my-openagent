@@ -87,6 +87,13 @@ describe("writeHookMessagesBack", () => {
 })
 
 describe("storedMessagesToV1", () => {
+  test("preserves stored timestamps used to acknowledge parent wakes without mutating the host message", () => {
+    const stored = { type: "assistant", id: "msg_time", time: { created: 123, completed: 456 }, content: [{ type: "text", text: "result" }] }
+    const view = storedMessagesToV1([stored], "ses_time")
+    expect(view[0]?.info.time).toEqual({ created: 123, completed: 456 })
+    expect(view[0]?.info.time).not.toBe(stored.time)
+  })
+
   // OpenCode 2 stores a tool call as { type: "tool", id, name, state } (seen in session_message rows
   // on 2.0.32); the v1 hook code reads part.tool and part.callID.
   test("aliases the stored tool part name and id to the v1 tool and callID fields", () => {
