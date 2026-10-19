@@ -7,6 +7,7 @@ import { ParentWakePendingQueue } from "./parent-wake-pending-queue"
 import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
 import { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
 import type { ParentWakeNotifierDeps, ParentWakeNotifierOptions } from "./parent-wake-notifier-types"
+import { sendParentWakeVisibleNotice } from "./parent-wake-visible-notice"
 import {
   handleDispatchedParentWakeWindowElapsed,
   logParentWakeWindowRecoveryError,
@@ -40,7 +41,8 @@ export class ParentWakeNotifier {
           dispatchedTracker: this.dispatchedTracker,
           sessionInspector: this.sessionInspector,
           requeueWake: (latestWake) => this.requeueWake(sessionID, latestWake),
-          scheduleFlush: () => this.schedulePendingParentWakeFlush(sessionID),
+          scheduleFlush: (delayMs) => this.schedulePendingParentWakeFlush(sessionID, delayMs),
+          sendVisibleNotice: (latestWake) => sendParentWakeVisibleNotice(deps, sessionID, latestWake),
         }).catch((error: unknown) => {
           logParentWakeWindowRecoveryError(
             sessionID,

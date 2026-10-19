@@ -2,8 +2,7 @@ import { log } from "../../shared"
 import type { PendingParentWake } from "./parent-wake-dedupe"
 import type { ParentWakeDispatchedTracker } from "./parent-wake-dispatched-tracker"
 import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
-
-const MAX_NO_ASSISTANT_OUTPUT_RETRIES = 1
+import { parentWakeDeliveryTimeLeft } from "./parent-wake-visible-notice"
 
 type ParentWakeWindowRecoveryInput = {
   readonly sessionID: string
@@ -11,7 +10,8 @@ type ParentWakeWindowRecoveryInput = {
   readonly dispatchedTracker: ParentWakeDispatchedTracker
   readonly sessionInspector: ParentWakeSessionInspector
   readonly requeueWake: (wake: PendingParentWake) => void
-  readonly scheduleFlush: () => void
+  readonly scheduleFlush: (delayMs?: number) => void
+  readonly sendVisibleNotice: (wake: PendingParentWake) => Promise<void>
 }
 
 export async function handleDispatchedParentWakeWindowElapsed(
@@ -31,9 +31,13 @@ export async function handleDispatchedParentWakeWindowElapsed(
   }
 
   const retryCount = input.wake.noAssistantOutputRetryCount ?? 0
-  if (retryCount >= MAX_NO_ASSISTANT_OUTPUT_RETRIES) {
+  const timeLeft = parentWakeDeliveryTimeLeft(input.wake)
+  if (!input.wake.shouldReply || timeLeft === 0) {
+    if (input.wake.shouldReply) {
+      await input.sendVisibleNotice(input.wake)
+    }
     input.dispatchedTracker.clearWake(input.sessionID)
-    log("[background-agent] Stopped retrying parent wake after repeated no-output dispatch:", {
+    log("[background-agent] Finished parent wake recovery without another model turn:", {
       sessionID: input.sessionID,
       retryCount,
     })
@@ -43,10 +47,13 @@ export async function handleDispatchedParentWakeWindowElapsed(
   input.dispatchedTracker.clearWake(input.sessionID)
   input.wake.noAssistantOutputRetryCount = retryCount + 1
   input.requeueWake(input.wake)
-  input.scheduleFlush()
+  const retryDelayMs = Math.min(1_000 * 2 ** Math.min(retryCount, 3), 8_000, timeLeft)
+  input.scheduleFlush(retryDelayMs)
   log("[background-agent] Requeued dispatched parent wake after no assistant output:", {
     sessionID: input.sessionID,
     retryCount: input.wake.noAssistantOutputRetryCount,
+    retryDelayMs,
+    timeLeft,
   })
 }
 
