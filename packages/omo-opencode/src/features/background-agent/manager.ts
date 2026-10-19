@@ -60,6 +60,7 @@ import {
   type QueueItem,
   TASK_CLEANUP_DELAY_MS,
   TASK_TTL_MS,
+  TODO_CONTINUATION_GRACE_MS,
 } from "./constants"
 import { formatDuration } from "./duration-formatter"
 import {
@@ -249,6 +250,10 @@ export interface BackgroundManagerConfig {
   enableParentSessionNotifications?: boolean
   // false when the todo-continuation-enforcer hook is disabled: nothing resumes an idle child with open todos
   todoContinuationEnabled?: boolean
+  // bound on the wait for a todo continuation that never comes for child sessions:
+  // after this much continuous idle time with open todos, the child's terminal
+  // assistant message completes the task (child-handle finalResponse parity)
+  todoContinuationGraceMs?: number
   modelFallbackControllerAccessor?: ModelFallbackControllerAccessor
   log?: typeof log
 }
@@ -294,6 +299,7 @@ export class BackgroundManager {
   private preStartDescendantReservations: Set<string>
   private enableParentSessionNotifications: boolean
   private todoContinuationEnabled: boolean
+  private todoContinuationGraceMs: number
   private modelFallbackControllerAccessor?: ModelFallbackControllerAccessor
   private logger: typeof log
   private loggedSessionStatusUnavailable = false
@@ -321,6 +327,7 @@ export class BackgroundManager {
     this.preStartDescendantReservations = new Set()
     this.enableParentSessionNotifications = options?.enableParentSessionNotifications ?? true
     this.todoContinuationEnabled = options?.todoContinuationEnabled ?? true
+    this.todoContinuationGraceMs = options?.todoContinuationGraceMs ?? TODO_CONTINUATION_GRACE_MS
     this.modelFallbackControllerAccessor = options?.modelFallbackControllerAccessor
     this.logger = options?.log ?? log
     this.parentWakeNotifier = new ParentWakeNotifier(
@@ -2507,6 +2514,33 @@ The task was re-queued on a fallback model after a retryable failure.
     }
   }
 
+  // The child's final response: text of the terminal assistant message, when the
+  // session's last assistant turn carries non-empty text. Used to complete an idle
+  // child whose open todos would otherwise hold it running (child-handle parity:
+  // complete on non-empty finalResponse).
+  private async readTerminalAssistantText(sessionID: string): Promise<string | undefined> {
+    try {
+      const resp = await messagesInDirectory(this.client, { path: { id: sessionID } }, this.directory)
+      const msgs = normalizeSDKResponse(resp, [] as Array<{
+        info?: { role?: string }
+        parts?: Array<{ type?: string; text?: string }>
+      }>) || []
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        const info = m.info
+        if (!info || info.role !== "assistant") continue
+        const text = (m.parts ?? [])
+          .map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
+          .join("\n")
+          .trim()
+        return text.length > 0 ? text : undefined
+      }
+    } catch (error) {
+      log("[background-agent] Error reading terminal assistant text:", { sessionID, error })
+    }
+    return undefined
+  }
+
   private async readStoppedSessionError(sessionID: string): Promise<string | undefined> {
     try {
       const response = await messagesInDirectory(this.client, {
@@ -3330,6 +3364,8 @@ The task was re-queued on a fallback model after a retryable failure.
           // Unknown or terminal statuses (like "interrupted") fall through to completion.
           if (sessionStatus && isActiveSessionStatus(sessionStatus.type)) {
             task.consecutiveErroredIdlePolls = 0
+            // The child is being continued: restart the continuous-idle grace window.
+            task.idleBlockedSince = undefined
             log("[background-agent] Session still running, relying on event-based progress:", {
               taskId: task.id,
               sessionID,
@@ -3399,9 +3435,31 @@ The task was re-queued on a fallback model after a retryable failure.
 
           const hasIncompleteTodos = await this.checkSessionTodos(sessionID)
           if (hasIncompleteTodos) {
-            log("[background-agent] Task has incomplete todos via polling, waiting:", task.id)
+            // Bound the wait for a todo continuation: the enforcer drives parent
+            // sessions, so a child whose last turn is its answer (an escalation, a
+            // blocker report) would otherwise wait until the 45 min stale deadline.
+            // Once the child has been continuously idle past the grace, its terminal
+            // assistant message is the final response and completes the task
+            // (manager/child-handle.ts:195 parity: complete on non-empty finalResponse).
+            task.idleBlockedSince ??= new Date()
+            const idleBlockedForMs = Date.now() - task.idleBlockedSince.getTime()
+            if (idleBlockedForMs < this.todoContinuationGraceMs) {
+              log("[background-agent] Task has incomplete todos via polling, waiting:", task.id)
+              continue
+            }
+            const finalResponse = await this.readTerminalAssistantText(sessionID)
+            if (!finalResponse) {
+              log("[background-agent] Task idle past todo continuation grace without a final response, waiting:", task.id)
+              continue
+            }
+            log("[background-agent] Task idle past todo continuation grace with a final response, completing:", {
+              taskId: task.id,
+              idleBlockedForMs,
+            })
+            await this.tryCompleteTask(task, `${completionSource} (final response after todo continuation grace)`)
             continue
           }
+          task.idleBlockedSince = undefined
 
           await this.tryCompleteTask(task, completionSource)
         } catch (error) {

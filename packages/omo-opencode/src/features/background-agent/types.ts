@@ -53,6 +53,9 @@ export interface BackgroundTask {
   originalPrompt?: string
   agent: string
   spawnDepth?: number
+  // Set while a running child is continuously idle with open todos: the start of
+  // the todo-continuation grace window. Cleared whenever the session goes active.
+  idleBlockedSince?: Date
   status: BackgroundTaskStatus
   queuedAt?: Date
   pendingResume?: object
