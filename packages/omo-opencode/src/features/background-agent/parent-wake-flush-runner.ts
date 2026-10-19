@@ -7,6 +7,7 @@ import { sendParentWakePrompt } from "./parent-wake-prompt-dispatch"
 import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
 import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
 import type { ParentWakeNotifierDeps } from "./parent-wake-notifier-types"
+import { parentWakeDeliveryTimeLeft, sendParentWakeVisibleNotice } from "./parent-wake-visible-notice"
 
 type ParentWakeFlushRunnerDeps = {
   readonly notifierDeps: ParentWakeNotifierDeps
@@ -45,6 +46,12 @@ export class ParentWakeFlushRunner {
       return
     }
     if (await this.dropAdmittedWakeConsumedByParent(sessionID, latestWake)) {
+      return
+    }
+    if (latestWake.shouldReply && parentWakeDeliveryTimeLeft(latestWake) === 0) {
+      await sendParentWakeVisibleNotice(this.deps.notifierDeps, sessionID, latestWake)
+      this.deps.pendingQueue.deleteWake(sessionID)
+      this.deps.dispatchedTracker.clearWake(sessionID)
       return
     }
     const emptyAssistantTurnRetry = latestWake.allowEmptyAssistantTurnRetry === true
