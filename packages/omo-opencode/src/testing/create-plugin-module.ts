@@ -292,6 +292,7 @@ export function createPluginModule(overrides: Partial<PluginModuleDeps> = {}): P
       tmuxConfig,
       modelCacheState,
       backgroundNotificationHookEnabled: isHookEnabled("background-notification"),
+      todoContinuationEnforcerEnabled: isHookEnabled("todo-continuation-enforcer"),
       runtimeSkillSourceUrl: runtimeSkillSource?.url,
     })
 
