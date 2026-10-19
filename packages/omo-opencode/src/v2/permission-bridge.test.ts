@@ -618,7 +618,7 @@ describe("v2 permission bridge wiring", () => {
     let projectedContext: Record<string, unknown> | undefined
 
     const ctx = {
-      agent: { transform: async (fn: (editor: object) => void) => fn({}) },
+      agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
       tool: {
         transform: async (fn: (editor: object) => void) =>
           fn({

@@ -25,7 +25,7 @@ async function projectTodos(existing: string[] = []) {
   const state = createAdapterState(directory)
   const tools: RegisteredTool[] = []
   const ctx = {
-    agent: { transform: async (fn: (editor: object) => void) => fn({}) },
+    agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
     tool: {
       transform: async (fn: (editor: object) => void) => fn({
         list: () => existing.map((name) => ({ id: name, name })),

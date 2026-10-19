@@ -23,7 +23,7 @@ async function project(disabled: Record<string, boolean>) {
     ["plugin_hidden", { id: "plugin_hidden", name: "plugin_hidden" }],
   ])
   const ctx = {
-    agent: { transform: async (fn: (editor: object) => void) => fn({ get: () => undefined }) },
+    agent: { transform: async (fn: (editor: object) => void) => fn({ get: () => undefined, list: () => [] }) },
     tool: { transform: async (fn: (editor: object) => void) => fn({
       list: () => [...registry.values()],
       add: (tool: { name: string }) => registry.set(tool.name, { id: tool.name, name: tool.name }),
