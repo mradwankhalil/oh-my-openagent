@@ -62,7 +62,7 @@ function toolDenies(value: unknown): Array<{ action: string; resource: string; e
 type SessionApi = {
   get: (input: { sessionID: string }) => Promise<Record<string, unknown>>
   context: (input: { sessionID: string }) => Promise<unknown>
-  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue" }) => Promise<unknown>
+  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue"; resume?: boolean }) => Promise<unknown>
   create: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
   interrupt: (input: { sessionID: string }) => Promise<unknown>
   switchAgent: (input: { sessionID: string; agent: string }) => Promise<unknown>
@@ -130,6 +130,9 @@ export async function sendPrompt(api: SessionApi, input: unknown): Promise<unkno
   if (typeof body.system === "string" && body.system.length > 0) await api.synthetic({ sessionID, text: body.system })
   const denies = toolDenies(body.tools)
   if (denies.length > 0) await api.update({ sessionID, permissions: denies })
+  if (body.noReply === true && isRecord(body.metadata) && body.metadata.omoBackgroundTaskNotice === true) {
+    return api.prompt({ sessionID, text: textFromPrompt(input), resume: false })
+  }
   const delivery = promptDelivery(input)
   return api.prompt({ sessionID, text: textFromPrompt(input), ...(delivery ? { delivery } : {}) })
 }
