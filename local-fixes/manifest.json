@@ -875,7 +875,9 @@
       "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
       "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
       "why": "A hidden noReply synthetic deposit is not a visible deadline fallback. An internal notice metadata flag maps only the completion notice to native session.prompt with resume:false, preserving ordinary noReply behavior in this lane.",
-      "markers": ["body.metadata.omoBackgroundTaskNotice"],
+      "markers": [
+        "body.metadata.omoBackgroundTaskNotice"
+      ],
       "overlapsWith": [],
       "orderNote": "First of six signed idle-parent wake replay units (57-62). Native notice owner case is RED on old mapping and GREEN on the new mapping. The PR variant is narrowly adapted to 502a4f0fd; unrelated local recovery and attachment changes are excluded. Stage only."
     },
@@ -887,8 +889,12 @@
       "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
       "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
       "why": "Real isolated host QA produced eight successful replies for a single wake because storedMessagesToV1 dropped time and acknowledgement could never establish that output followed dispatch. Clone raw time into the read-only V1 view without mutating the host message.",
-      "markers": ["translated.info.time"],
-      "overlapsWith": ["53-v2-tool-part-alias-transcript"],
+      "markers": [
+        "translated.info.time"
+      ],
+      "overlapsWith": [
+        "53-v2-tool-part-alias-transcript"
+      ],
       "orderNote": "After 53; preserve its stored-tool aliases and add only timestamp propagation. Timestamp and native-history owner cases fail on the old mapping and pass after the fix. Hook write-back behavior is unchanged."
     },
     {
@@ -911,7 +917,9 @@
       "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
       "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
       "why": "Bound no-output retry duration from the first reply attempt, not time safely waiting behind an active parent, and do not reset that clock when the wake is copied between dispatched and pending storage.",
-      "markers": ["deliveryStartedAt: wake.deliveryStartedAt"],
+      "markers": [
+        "deliveryStartedAt: wake.deliveryStartedAt"
+      ],
       "overlapsWith": [],
       "orderNote": "State prerequisite for 61 and 62. New notifications reset the clock; retry copies preserve it. Existing active-parent defer controls and the deadline owner case remain green."
     },
@@ -923,8 +931,14 @@
       "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
       "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
       "why": "An identical accepted payload is remembered by the semantic gate for 15 seconds even if no output follows. Give only confirmed failed attempts distinct identities, keep normal serialization and safety checks, and remove the outer hidden wrapper at reply/visible-notice delivery boundaries.",
-      "markers": ["visibleParentWakeText", "Visible parent wake notice not accepted"],
-      "overlapsWith": ["57-v2-visible-completion-notice", "60-parent-wake-delivery-clock"],
+      "markers": [
+        "visibleParentWakeText",
+        "Visible parent wake notice not accepted"
+      ],
+      "overlapsWith": [
+        "57-v2-visible-completion-notice",
+        "60-parent-wake-delivery-clock"
+      ],
       "orderNote": "After 57 and 60. Before 62. Owner test RED: host calls 1 instead of 2 inside the semantic hold, hidden wrapper true instead of false. GREEN through the unchanged shared prompt gate. Existing silent active-parent admissions remain unchanged."
     },
     {
@@ -935,9 +949,64 @@
       "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
       "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
       "why": "The old one-retry budget silently discarded an unacknowledged completion. Bound reply retries to 60 seconds with 1/2/4/8-second capped backoff, acknowledge substantive output, and preserve the result as a visible durable user notice when the deadline expires.",
-      "markers": ["Finished parent wake recovery without another model turn", "retryDelayMs"],
-      "overlapsWith": ["57-v2-visible-completion-notice", "58-v2-parent-wake-timestamps", "59-parent-wake-empty-output", "60-parent-wake-delivery-clock", "61-parent-wake-visible-retry"],
+      "markers": [
+        "Finished parent wake recovery without another model turn",
+        "retryDelayMs"
+      ],
+      "overlapsWith": [
+        "57-v2-visible-completion-notice",
+        "58-v2-parent-wake-timestamps",
+        "59-parent-wake-empty-output",
+        "60-parent-wake-delivery-clock",
+        "61-parent-wake-visible-retry"
+      ],
       "orderNote": "Last of six ordered wake units; never replay alone. Integration verification: 1015 tests/94 files and full typecheck pass; all edited files have no LSP errors/warnings (unchanged private-helper hint retained). Real isolated 2.0.32 host: retry 3663ms, successful output one turn, visible no-turn fallback at 60177ms; native browser confirms the durable user inbox item renders in chat. PR variant: 157 required tests and full typecheck pass. Two unrelated Windows session-db cleanup failures reproduce on untouched 502a4f0fd and are disclosed on PR #12. Stage only; no activation or restart."
+    },
+    {
+      "id": "63-todo-continuation-grace",
+      "title": "Bound the todo-continuation wait for child final answers",
+      "commit": "a2ad3dab3d75b24c705cd00ebbec485aa829e05e",
+      "patch": "patches/63-todo-continuation-grace.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/13",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10626",
+      "why": "A child whose last assistant turn is its final answer (an escalation, a blocker report) with open todos waited until the 45 min stale deadline because todo continuation only drives parents. After 30 s of continuous idle, a non-empty terminal response completes the task; an empty turn keeps waiting.",
+      "markers": [
+        "TODO_CONTINUATION_GRACE_MS",
+        "final response after todo continuation grace"
+      ],
+      "overlapsWith": [
+        "52-bg-complete-without-todo-continuation"
+      ],
+      "orderNote": "Child-side counterpart to fix 52 when todo continuation is enabled; independent of the wake units 57-62."
+    },
+    {
+      "id": "64-retry-abort-failed-session",
+      "title": "Confirm the failed session is aborted before scheduling a retry",
+      "commit": "8d56c81c219a56a822ac9f6095eab2efc7d5f820",
+      "patch": "patches/64-retry-abort-failed-session.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/10",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10619",
+      "why": "abortWithTimeout(...).catch(() => {}) swallowed abort failures, so a retry could start while the original turn kept running (duplicate live sessions). The abort is retried once at 30 s and non-confirmation is logged.",
+      "markers": [
+        "Abort before retry did not confirm"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Independent; applies to fallback-retry-handler.ts."
+    },
+    {
+      "id": "65-agent-tool-visibility",
+      "title": "Scope OMO delegation tools per agent so switching back restores native tools",
+      "commit": "dbc708933c692eb3b393345eaa1500ed9520856b",
+      "patch": "patches/65-agent-tool-visibility.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/11",
+      "upstreamIssue": "https://github.com/anomalyco/opencode/issues/57185",
+      "why": "OMO tools registered on the shared global registry with no owning-agent scope, so native/custom agents kept task and call_omo_agent after a switch back. A second ctx.agent.transform denies OMO tool ids on non-owned agents and native subagent on OMO agents; idempotent and explicit-rule aware.",
+      "markers": [
+        "collectOmoToolIDs",
+        "NATIVE_SUBAGENT_TOOL"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Wired from v2/project-config.ts; independent of 52-64."
     }
   ],
   "externalFixes": [

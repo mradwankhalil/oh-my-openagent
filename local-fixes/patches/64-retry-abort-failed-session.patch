@@ -1,0 +1,177 @@
+From 8d56c81c219a56a822ac9f6095eab2efc7d5f820 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 21:45:24 +0300
+Subject: [PATCH] fix(background-agent): confirm the failed session is aborted
+ before scheduling a retry
+
+One live session per task: a failed turn must actually stop before its
+replacement starts. The previous abort was silently swallowed, so a
+timeout/error left the original running beside the retry. Retry the
+abort once with a longer timeout and log when it still does not confirm.
+Regression test asserts the failed session is aborted (and retried once
+on failure) before the retry is scheduled.
+
+(cherry picked from commit 9846419d05f1b2852bea579fa31a39697186a17e)
+---
+ ...llback-retry-aborts-failed-session.test.ts | 125 ++++++++++++++++++
+ .../fallback-retry-handler.ts                 |  12 +-
+ 2 files changed, 136 insertions(+), 1 deletion(-)
+ create mode 100644 packages/omo-opencode/src/features/background-agent/fallback-retry-aborts-failed-session.test.ts
+
+diff --git a/packages/omo-opencode/src/features/background-agent/fallback-retry-aborts-failed-session.test.ts b/packages/omo-opencode/src/features/background-agent/fallback-retry-aborts-failed-session.test.ts
+new file mode 100644
+index 000000000..f0428a31e
+--- /dev/null
++++ b/packages/omo-opencode/src/features/background-agent/fallback-retry-aborts-failed-session.test.ts
+@@ -0,0 +1,125 @@
++import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test"
++import { tryFallbackRetry } from "./fallback-retry-handler"
++import type { FallbackEntry } from "../../shared/model-requirements"
++import type { BackgroundTask } from "./types"
++import type { ConcurrencyManager } from "./concurrency"
++import type { OpencodeClient, QueueItem } from "./constants"
++
++const sharedLogMock = mock(() => {})
++const readConnectedProvidersCacheMock = mock(() => null)
++const readProviderModelsCacheMock = mock(() => null)
++const shouldRetryErrorMock = mock(() => true)
++const getNextFallbackMock = mock((chain: FallbackEntry[], attempt: number) => chain[attempt])
++const hasMoreFallbacksMock = mock((chain: FallbackEntry[], attempt: number) => attempt < chain.length)
++const selectFallbackProviderMock = mock((providers: string[]) => providers[0])
++const transformModelForProviderMock = mock((_provider: string, model: string) => model)
++
++const retryHandlerDeps = {
++  log: sharedLogMock,
++  readConnectedProvidersCache: readConnectedProvidersCacheMock,
++  readProviderModelsCache: readProviderModelsCacheMock,
++  shouldRetryError: shouldRetryErrorMock,
++  getNextFallback: getNextFallbackMock,
++  hasMoreFallbacks: hasMoreFallbacksMock,
++  selectFallbackProvider: selectFallbackProviderMock,
++  transformModelForProvider: transformModelForProviderMock,
++}
++
++function createMockTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
++  return {
++    id: "test-task-1",
++    description: "test task",
++    prompt: "test prompt",
++    agent: "sisyphus-junior",
++    status: "error",
++    parentSessionId: "parent-session-1",
++    parentMessageId: "parent-message-1",
++    fallbackChain: [{ model: "fallback-model-1", providers: ["provider-a"], variant: undefined }],
++    attemptCount: 0,
++    concurrencyKey: "provider-a/original-model",
++    model: { providerID: "provider-a", modelID: "original-model" },
++    ...overrides,
++  }
++}
++
++function createMockConcurrencyManager(): ConcurrencyManager {
++  return {
++    release: mock(() => {}),
++    acquire: mock(async () => {}),
++    getConcurrencyKey: mock((model: string) => model),
++    getQueueLength: mock(() => 0),
++    getActiveCount: mock(() => 0),
++  } as never
++}
++
++function createDefaultArgs(taskOverrides: Partial<BackgroundTask> = {}) {
++  const processKeyFn = mock(() => {})
++  const queuesByKey = new Map<string, QueueItem[]>()
++  const idleDeferralTimers = new Map<string, ReturnType<typeof setTimeout>>()
++  const concurrencyManager = createMockConcurrencyManager()
++  const abortMock = mock(async (): Promise<unknown> => ({}))
++  const client = { session: { abort: abortMock } } as never as OpencodeClient
++  const task = createMockTask(taskOverrides)
++
++  return {
++    task,
++    errorInfo: { name: "OverloadedError", message: "model overloaded" },
++    source: "polling",
++    concurrencyManager,
++    client,
++    abortMock,
++    idleDeferralTimers,
++    queuesByKey,
++    processKey: processKeyFn,
++    deps: retryHandlerDeps,
++  }
++}
++
++describe("tryFallbackRetry — exactly one live session per task", () => {
++  afterAll(() => {
++    mock.restore()
++  })
++
++  beforeEach(() => {
++    shouldRetryErrorMock.mockImplementation(() => true)
++    selectFallbackProviderMock.mockImplementation((providers: string[]) => providers[0])
++    readProviderModelsCacheMock.mockReturnValue(null)
++    readConnectedProvidersCacheMock.mockReturnValue(null)
++    getNextFallbackMock.mockImplementation((chain: FallbackEntry[], attempt: number) => chain[attempt])
++    hasMoreFallbacksMock.mockImplementation((chain: FallbackEntry[], attempt: number) => attempt < chain.length)
++    transformModelForProviderMock.mockImplementation((_provider: string, model: string) => model)
++  })
++
++  test("aborts the failed original session before scheduling its retry", async () => {
++    const args = createDefaultArgs({ sessionId: "failed-session-1" })
++
++    const result = await tryFallbackRetry(args)
++
++    expect(result).toBe(true)
++    expect(args.abortMock).toHaveBeenCalledTimes(1)
++    expect(args.abortMock.mock.calls[0]?.[0]).toEqual({ path: { id: "failed-session-1" } })
++  })
++
++  test("retries the abort once when the first abort does not confirm", async () => {
++    const args = createDefaultArgs({ sessionId: "failed-session-2" })
++    args.abortMock
++      .mockImplementationOnce(async () => ({ error: { message: "abort failed" } }))
++      .mockImplementationOnce(async () => ({}))
++
++    const result = await tryFallbackRetry(args)
++
++    expect(result).toBe(true)
++    expect(args.abortMock).toHaveBeenCalledTimes(2)
++    expect(args.abortMock.mock.calls[0]?.[0]).toEqual({ path: { id: "failed-session-2" } })
++    expect(args.abortMock.mock.calls[1]?.[0]).toEqual({ path: { id: "failed-session-2" } })
++  })
++
++  test("does not abort when the task has no session", async () => {
++    const args = createDefaultArgs({ sessionId: undefined })
++
++    const result = await tryFallbackRetry(args)
++
++    expect(result).toBe(true)
++    expect(args.abortMock).not.toHaveBeenCalled()
++  })
++})
+diff --git a/packages/omo-opencode/src/features/background-agent/fallback-retry-handler.ts b/packages/omo-opencode/src/features/background-agent/fallback-retry-handler.ts
+index 2ce53d1b7..1beddd6d2 100644
+--- a/packages/omo-opencode/src/features/background-agent/fallback-retry-handler.ts
++++ b/packages/omo-opencode/src/features/background-agent/fallback-retry-handler.ts
+@@ -253,7 +253,17 @@ export async function tryFallbackRetry(args: {
+   }
+ 
+   if (previousSessionID) {
+-    await abortWithTimeout(client, previousSessionID).catch(() => {})
++    // One live session per task: the failed turn must actually stop before the
++    // replacement starts. A silent failure here leaves the original running beside it.
++    const aborted = await abortWithTimeout(client, previousSessionID)
++    if (!aborted) {
++      const retried = await abortWithTimeout(client, previousSessionID, 30_000)
++      deps.log("[background-agent] Abort before retry did not confirm:", {
++        taskId: task.id,
++        sessionID: previousSessionID,
++        retried,
++      })
++    }
+   }
+ 
+   queue.push({ task, input: retryInput, attemptID: nextAttempt.attemptId, rawConcurrencyKey: rawKey })
+-- 
+2.55.0.windows.5
+

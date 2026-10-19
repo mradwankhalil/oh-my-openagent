@@ -1,0 +1,378 @@
+From dbc708933c692eb3b393345eaa1500ed9520856b Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:04:44 +0300
+Subject: [PATCH] fix(v2): scope OMO delegation tools per agent so switching
+ back restores native tools
+
+(cherry picked from commit 25381a2d6018f70a64e0c984bcab6a8efa34c6e7)
+---
+ .../src/v2/agent-tool-visibility.test.ts      | 173 ++++++++++++++++++
+ .../src/v2/agent-tool-visibility.ts           |  93 ++++++++++
+ .../src/v2/permission-bridge.test.ts          |   2 +-
+ .../v2/project-config.mcp-precedence.test.ts  |   2 +-
+ .../v2/project-config.mcp-registry.test.ts    |   2 +-
+ .../src/v2/project-config.todo.test.ts        |   2 +-
+ .../omo-opencode/src/v2/project-config.ts     |   8 +
+ 7 files changed, 278 insertions(+), 4 deletions(-)
+ create mode 100644 packages/omo-opencode/src/v2/agent-tool-visibility.test.ts
+ create mode 100644 packages/omo-opencode/src/v2/agent-tool-visibility.ts
+
+diff --git a/packages/omo-opencode/src/v2/agent-tool-visibility.test.ts b/packages/omo-opencode/src/v2/agent-tool-visibility.test.ts
+new file mode 100644
+index 000000000..ef6094dda
+--- /dev/null
++++ b/packages/omo-opencode/src/v2/agent-tool-visibility.test.ts
+@@ -0,0 +1,173 @@
++/// <reference types="bun-types" />
++import { expect, test } from "bun:test"
++import { mkdtempSync, rmSync } from "node:fs"
++import { tmpdir } from "node:os"
++import { join } from "node:path"
++import { projectV1Surface } from "./project-config"
++import {
++  collectOmoToolIDs,
++  isOmoOwnedAgentID,
++  NATIVE_SUBAGENT_TOOL,
++  scopeAgentToolVisibility,
++  type AgentDraftLike,
++} from "./agent-tool-visibility"
++
++type Rule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
++
++function editorOf(agents: AgentDraftLike[]) {
++  return {
++    list: () => agents,
++    update(id: string, fn: (agent: AgentDraftLike) => void) {
++      const agent = agents.find((a) => a.id === id)
++      if (agent) fn(agent)
++    },
++  }
++}
++
++const OMO_TOOLS = ["task", "call_omo_agent"]
++
++function denyRule(action: string): Rule {
++  return { action, resource: "*", effect: "deny" }
++}
++
++test("collectOmoToolIDs scopes delegation without hiding shared native utilities", () => {
++  const tools = {
++    task: { description: "d", execute: async () => "" },
++    call_omo_agent: { execute: async () => "" },
++    grep: { execute: async () => "" },
++    glob: { execute: async () => "" },
++    skill: { execute: async () => "" },
++    edit: { execute: async () => "" },
++    todowrite: { execute: async () => "" },
++    broken: { description: "no execute" },
++    "not-a-record": "nope",
++  }
++  expect(collectOmoToolIDs(tools)).toEqual(["task", "call_omo_agent"])
++  expect(collectOmoToolIDs(undefined)).toEqual([])
++})
++
++test("ownership mirrors the delegation routing rule", () => {
++  for (const owned of ["sisyphus", "Sisyphus - ultraworker", "Sisyphus-Junior", "oh-my-openagent/oracle", "explore", "librarian"]) {
++    expect(isOmoOwnedAgentID(owned), owned).toBe(true)
++  }
++  for (const native of ["general", "build", "plan", "custom", "oh-my-openagent/custom", "oracle-custom"]) {
++    expect(isOmoOwnedAgentID(native), native).toBe(false)
++  }
++  expect(isOmoOwnedAgentID("Localized Name", ["localized name"])).toBe(true)
++  // Native primaries stay native even if a caller passes them as owned.
++  expect(isOmoOwnedAgentID("build", ["build"])).toBe(false)
++})
++
++test("native and custom agents lose every OMO-owned tool", () => {
++  const build: AgentDraftLike = { id: "build" }
++  const general: AgentDraftLike = { id: "general", permissions: [denyRule("question"), denyRule("subagent")] }
++  const custom: AgentDraftLike = { id: "my-custom-agent", permissions: [] }
++  scopeAgentToolVisibility(editorOf([build, general, custom]), OMO_TOOLS)
++
++  for (const agent of [build, general, custom]) {
++    for (const tool of OMO_TOOLS) {
++      expect(agent.permissions, `${agent.id} denies ${tool}`).toContainEqual(denyRule(tool))
++    }
++  }
++  // Native agents keep their native delegation tool and their own rules.
++  expect(build.permissions!.some((r) => r.action === NATIVE_SUBAGENT_TOOL)).toBe(false)
++  expect(general.permissions!.slice(0, 2)).toEqual([denyRule("question"), denyRule("subagent")])
++})
++
++test("OMO-owned agents lose native subagent, keep OMO tools", () => {
++  const sisyphus: AgentDraftLike = {
++    id: "Sisyphus - ultraworker",
++    permissions: [{ action: "task", resource: "*", effect: "allow" }],
++  }
++  const nested: AgentDraftLike = { id: "oh-my-openagent/oracle" }
++  scopeAgentToolVisibility(editorOf([sisyphus, nested]), OMO_TOOLS)
++
++  expect(sisyphus.permissions).toContainEqual(denyRule(NATIVE_SUBAGENT_TOOL))
++  expect(nested.permissions).toEqual([denyRule(NATIVE_SUBAGENT_TOOL)])
++  for (const tool of OMO_TOOLS) {
++    expect(sisyphus.permissions!.some((r) => r.action === tool && r.effect === "deny"), tool).toBe(false)
++  }
++  // The explicit task allow stays untouched.
++  expect(sisyphus.permissions).toContainEqual({ action: "task", resource: "*", effect: "allow" })
++})
++
++test("existing explicit rules are never overridden", () => {
++  // A user custom agent that explicitly allows an OMO tool keeps that allow:
++  // whollyDisabled applies the LAST matching rule, so an appended deny would
++  // silently win — the scoper must not append one.
++  const custom: AgentDraftLike = {
++    id: "custom",
++    permissions: [{ action: "task", resource: "*", effect: "allow" }],
++  }
++  scopeAgentToolVisibility(editorOf([custom]), ["task", "call_omo_agent"])
++  expect(custom.permissions).toEqual([
++    { action: "task", resource: "*", effect: "allow" },
++    denyRule("call_omo_agent"),
++  ])
++})
++
++test("core default wildcard allow does not make agent scoping a no-op", () => {
++  const defaults: Rule[] = [{ action: "*", resource: "*", effect: "allow" }]
++  const build: AgentDraftLike = { id: "build", permissions: structuredClone(defaults) }
++  const sisyphus: AgentDraftLike = { id: "sisyphus", permissions: structuredClone(defaults) }
++  scopeAgentToolVisibility(editorOf([build, sisyphus]), OMO_TOOLS)
++  expect(build.permissions).toEqual([...defaults, ...OMO_TOOLS.map(denyRule)])
++  expect(sisyphus.permissions).toEqual([...defaults, denyRule("subagent")])
++})
++
++test("replayed transforms are idempotent (config reload path)", () => {
++  const build: AgentDraftLike = { id: "build" }
++  const sisyphus: AgentDraftLike = { id: "sisyphus" }
++  const editor = editorOf([build, sisyphus])
++  scopeAgentToolVisibility(editor, OMO_TOOLS)
++  const firstBuild = structuredClone(build.permissions)
++  const firstSisyphus = structuredClone(sisyphus.permissions)
++  scopeAgentToolVisibility(editor, OMO_TOOLS)
++  scopeAgentToolVisibility(editor, OMO_TOOLS)
++  expect(build.permissions).toEqual(firstBuild)
++  expect(sisyphus.permissions).toEqual(firstSisyphus)
++})
++
++test("projectV1Surface installs scoped delegation rules and replays after host config reload", async () => {
++  const directory = mkdtempSync(join(tmpdir(), "omo-tool-scope-"))
++  try {
++    // Mirror Agent.Info.default, including the wildcard allow omitted by the
++    // original empty-editor tests. Core's real registry is exercised separately.
++    const initial: AgentDraftLike[] = ["build", "general", "sisyphus"].map((id) => ({
++      id, permissions: [{ action: "*", resource: "*", effect: "allow" }],
++    }))
++    initial[1].permissions!.push(denyRule("subagent"))
++    let agents = structuredClone(initial)
++    const transforms: Array<(editor: ReturnType<typeof editorOf>) => void> = []
++    const registered: string[] = []
++    const ctx = {
++      agent: { transform: async (fn: typeof transforms[number]) => {
++        transforms.push(fn)
++        fn(editorOf(agents))
++      } },
++      tool: { transform: async (fn: (editor: object) => void) => fn({
++        add: (tool: { name: string }) => registered.push(tool.name),
++      }) },
++      command: { transform: async () => {} },
++      mcp: { transform: async () => {} },
++    } as unknown as Parameters<typeof projectV1Surface>[0]["ctx"]
++    await projectV1Surface({ ctx, directory, agentDirectory: join(directory, "agents"), config: {},
++      tools: { task: { execute: async () => "" }, call_omo_agent: { execute: async () => "" },
++        grep: { execute: async () => "" } },
++    })
++    for (const agent of agents.slice(0, 2)) {
++      expect(agent.permissions).toContainEqual(denyRule("task"))
++      expect(agent.permissions).toContainEqual(denyRule("call_omo_agent"))
++      expect(agent.permissions!.some((rule) => rule.action === "grep")).toBe(false)
++    }
++    expect(agents[2].permissions).toContainEqual(denyRule("subagent"))
++    expect(agents[2].permissions!.some((rule) => rule.action === "task")).toBe(false)
++    expect(registered.sort()).toEqual(["call_omo_agent", "grep", "task"])
++    const first = structuredClone(agents)
++    agents = structuredClone(initial)
++    for (const transform of transforms) transform(editorOf(agents))
++    expect(agents).toEqual(first)
++  } finally {
++    rmSync(directory, { recursive: true, force: true })
++  }
++})
+diff --git a/packages/omo-opencode/src/v2/agent-tool-visibility.ts b/packages/omo-opencode/src/v2/agent-tool-visibility.ts
+new file mode 100644
+index 000000000..59890338e
+--- /dev/null
++++ b/packages/omo-opencode/src/v2/agent-tool-visibility.ts
+@@ -0,0 +1,93 @@
++import { AGENT_DISPLAY_NAMES, getAgentConfigKey } from "../shared/agent-display-names"
++
++/**
++ * Native delegation tool. OMO agents delegate through tools.task instead, and the
++ * OMO delegation routing rule already forbids native subagent for them — this deny
++ * makes the configured surface match that rule.
++ */
++export const NATIVE_SUBAGENT_TOOL = "subagent"
++
++const NATIVE_AGENT_IDS = new Set(["general", "build", "plan"])
++const OMO_DELEGATION_TOOLS = new Set(["task", "call_omo_agent"])
++
++type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
++
++export type AgentDraftLike = {
++  id: string
++  permissions?: PermissionRule[]
++}
++
++/**
++ * Structural view of the V2 AgentEditor. Generic over the draft so the host's
++ * DeepMutable<Agent.Info> fits directly — its branded Agent.ID is not assignable
++ * to plain string under the project typecheck, so id stays unknown here and is
++ * stringified at the ownership check (runtime values are always strings).
++ */
++export type AgentEditorLike<D extends { id: unknown; permissions?: PermissionRule[] } = AgentDraftLike> = {
++  list(): readonly D[]
++  update(id: string, update: (agent: D) => void): void
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value)
++}
++
++/** Scope delegation only: grep/glob/edit/skill can replace native utilities. */
++export function collectOmoToolIDs(tools: unknown): string[] {
++  const ids: string[] = []
++  if (isRecord(tools)) {
++    for (const [name, value] of Object.entries(tools)) {
++      if (OMO_DELEGATION_TOOLS.has(name) && isRecord(value) && typeof value.execute === "function") ids.push(name)
++    }
++  }
++  return ids
++}
++
++/**
++ * Ownership mirror of createOmoDelegationRouting: only explicit OMO definitions
++ * establish ownership. Registered agent IDs may be config keys ("sisyphus"),
++ * display names ("Sisyphus - ultraworker"), or nested ("oh-my-openagent/sisyphus");
++ * general/build/plan and custom agents are never OMO-owned.
++ */
++export function isOmoOwnedAgentID(agentID: string, additionalOwnedIDs: readonly string[] = []): boolean {
++  const id = agentID.startsWith("oh-my-openagent/") ? agentID.slice("oh-my-openagent/".length) : agentID
++  if (NATIVE_AGENT_IDS.has(id.toLowerCase())) return false
++  if (Object.hasOwn(AGENT_DISPLAY_NAMES, getAgentConfigKey(id))) return true
++  return additionalOwnedIDs.some((owned) => owned.toLowerCase() === id.toLowerCase())
++}
++
++function mentionsAction(rules: readonly PermissionRule[], action: string): boolean {
++  // Preserve action-specific overrides. Core inserts a wildcard allow into
++  // EVERY Agent.Info.default, so treating it as an exemption defeats scoping.
++  return rules.some((rule) => rule.action === action)
++}
++
++function denyOnce(draft: { permissions?: PermissionRule[] }, action: string): void {
++  const rules = (draft.permissions ??= [])
++  if (mentionsAction(rules, action)) return
++  rules.push({ action, resource: "*", effect: "deny" })
++}
++
++/**
++ * Core snapshots already use the selected agent's current permissions. Scope
++ * the competing delegation entry points there, before both direct definitions
++ * and the Code Mode catalog are built; never delete from the shared registry.
++ * Native general's own subagent deny is intentionally preserved.
++ * Replays are idempotent; action-specific user overrides remain authoritative.
++ */
++export function scopeAgentToolVisibility<D extends { id: unknown; permissions?: PermissionRule[] }>(
++  editor: AgentEditorLike<D>,
++  omoToolIDs: readonly string[],
++  additionalOwnedIDs: readonly string[] = [],
++): void {
++  for (const agent of editor.list()) {
++    const id = String(agent.id)
++    if (isOmoOwnedAgentID(id, additionalOwnedIDs)) {
++      editor.update(id, (draft) => denyOnce(draft, NATIVE_SUBAGENT_TOOL))
++      continue
++    }
++    editor.update(id, (draft) => {
++      for (const tool of omoToolIDs) denyOnce(draft, tool)
++    })
++  }
++}
+diff --git a/packages/omo-opencode/src/v2/permission-bridge.test.ts b/packages/omo-opencode/src/v2/permission-bridge.test.ts
+index 931dd00dc..074eeaf6d 100644
+--- a/packages/omo-opencode/src/v2/permission-bridge.test.ts
++++ b/packages/omo-opencode/src/v2/permission-bridge.test.ts
+@@ -618,7 +618,7 @@ describe("v2 permission bridge wiring", () => {
+     let projectedContext: Record<string, unknown> | undefined
+ 
+     const ctx = {
+-      agent: { transform: async (fn: (editor: object) => void) => fn({}) },
++      agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
+       tool: {
+         transform: async (fn: (editor: object) => void) =>
+           fn({
+diff --git a/packages/omo-opencode/src/v2/project-config.mcp-precedence.test.ts b/packages/omo-opencode/src/v2/project-config.mcp-precedence.test.ts
+index 314d00444..dc87c68f5 100644
+--- a/packages/omo-opencode/src/v2/project-config.mcp-precedence.test.ts
++++ b/packages/omo-opencode/src/v2/project-config.mcp-precedence.test.ts
+@@ -17,7 +17,7 @@ async function projection(fallbacks: Record<string, Server>) {
+   directories.push(directory)
+   let transform: (editor: object) => void = () => undefined
+   const ctx = {
+-    agent: { transform: async (fn: (editor: object) => void) => fn({}) },
++    agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
+     tool: { transform: async (fn: (editor: object) => void) => fn({}) },
+     command: { transform: async (fn: (editor: object) => void) => fn({}) },
+     mcp: { transform: async (fn: (editor: object) => void) => { transform = fn } },
+diff --git a/packages/omo-opencode/src/v2/project-config.mcp-registry.test.ts b/packages/omo-opencode/src/v2/project-config.mcp-registry.test.ts
+index 9c87e406f..5ede57575 100644
+--- a/packages/omo-opencode/src/v2/project-config.mcp-registry.test.ts
++++ b/packages/omo-opencode/src/v2/project-config.mcp-registry.test.ts
+@@ -23,7 +23,7 @@ async function project(disabled: Record<string, boolean>) {
+     ["plugin_hidden", { id: "plugin_hidden", name: "plugin_hidden" }],
+   ])
+   const ctx = {
+-    agent: { transform: async (fn: (editor: object) => void) => fn({ get: () => undefined }) },
++    agent: { transform: async (fn: (editor: object) => void) => fn({ get: () => undefined, list: () => [] }) },
+     tool: { transform: async (fn: (editor: object) => void) => fn({
+       list: () => [...registry.values()],
+       add: (tool: { name: string }) => registry.set(tool.name, { id: tool.name, name: tool.name }),
+diff --git a/packages/omo-opencode/src/v2/project-config.todo.test.ts b/packages/omo-opencode/src/v2/project-config.todo.test.ts
+index 18ca5b428..b12f86e73 100644
+--- a/packages/omo-opencode/src/v2/project-config.todo.test.ts
++++ b/packages/omo-opencode/src/v2/project-config.todo.test.ts
+@@ -25,7 +25,7 @@ async function projectTodos(existing: string[] = []) {
+   const state = createAdapterState(directory)
+   const tools: RegisteredTool[] = []
+   const ctx = {
+-    agent: { transform: async (fn: (editor: object) => void) => fn({}) },
++    agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
+     tool: {
+       transform: async (fn: (editor: object) => void) => fn({
+         list: () => existing.map((name) => ({ id: name, name })),
+diff --git a/packages/omo-opencode/src/v2/project-config.ts b/packages/omo-opencode/src/v2/project-config.ts
+index 8800bf871..8f6ee49cf 100644
+--- a/packages/omo-opencode/src/v2/project-config.ts
++++ b/packages/omo-opencode/src/v2/project-config.ts
+@@ -7,6 +7,7 @@ import { log } from "../shared/logger"
+ import { agentMarkdownDirectory, nestedAgentID, writeAgentMarkdown } from "./agent-markdown"
+ import { createPermissionBridge, type V1AskInput } from "./permission-bridge"
+ import { toolInputSchema, toolResult } from "./tool-schema"
++import { collectOmoToolIDs, scopeAgentToolVisibility } from "./agent-tool-visibility"
+ 
+ type V2Context = Plugin.Context
+ 
+@@ -258,6 +259,13 @@ export async function projectV1Surface(input: {
+     if (editor.get(nameOr(editor, defaultAgent, nested))) editor.default(nameOr(editor, defaultAgent, nested))
+   })
+ 
++  // Scope delegation through agent permissions, before the host snapshots
++  // direct tools and Code Mode. Shared native utility replacements stay intact.
++  const omoToolIDs = collectOmoToolIDs(input.tools)
++  await input.ctx.agent.transform((editor) => {
++    scopeAgentToolVisibility(editor, omoToolIDs)
++  })
++
+   await projectTools({
+     ctx: input.ctx,
+     directory: input.directory,
+-- 
+2.55.0.windows.5
+
