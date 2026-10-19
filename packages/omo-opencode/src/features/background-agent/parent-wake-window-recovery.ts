@@ -4,6 +4,10 @@ import type { ParentWakeDispatchedTracker } from "./parent-wake-dispatched-track
 import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
 import { parentWakeDeliveryTimeLeft } from "./parent-wake-visible-notice"
 
+// How long an in-progress assistant turn keeps a dispatched wake alive before the
+// usual no-output recovery takes over again (a stuck turn must not hide the wake).
+const IN_PROGRESS_TURN_MAX_EXTENSION_MS = 300_000
+
 type ParentWakeWindowRecoveryInput = {
   readonly sessionID: string
   readonly wake: PendingParentWake
@@ -25,6 +29,17 @@ export async function handleDispatchedParentWakeWindowElapsed(
   if (await input.sessionInspector.hasAssistantOrToolOutputAfterDispatchedWake(input.sessionID, input.wake)) {
     input.dispatchedTracker.clearWake(input.sessionID)
     log("[background-agent] Cleared dispatched parent wake after observing assistant output:", {
+      sessionID: input.sessionID,
+    })
+    return
+  }
+
+  if (
+    Date.now() - (input.wake.dispatchedAt ?? Date.now()) < IN_PROGRESS_TURN_MAX_EXTENSION_MS
+    && await input.sessionInspector.hasAssistantTurnInProgressAfterDispatchedWake(input.sessionID, input.wake)
+  ) {
+    input.dispatchedTracker.refreshWakeTimer(input.sessionID)
+    log("[background-agent] Extended dispatched parent wake window while assistant turn is in progress:", {
       sessionID: input.sessionID,
     })
     return

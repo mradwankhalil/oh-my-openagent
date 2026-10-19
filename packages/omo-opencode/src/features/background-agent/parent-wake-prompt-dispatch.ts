@@ -30,7 +30,8 @@ type ParentWakePromptDispatchInput = {
 }
 
 export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput): Promise<void> {
-  const notificationContent = input.forceNoReply === true || !input.latestWake.shouldReply
+  const noReply = input.forceNoReply === true || !input.latestWake.shouldReply
+  const notificationContent = noReply
     ? input.latestWake.notifications.join("\n\n")
     : visibleParentWakeText(input.latestWake)
   let dispatchStartedAt = Date.now()
@@ -44,10 +45,12 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
       client: input.client,
       sessionID: input.sessionID,
       source: "background-agent-parent-wake",
+      // A noReply admission and a reply dispatch of the same retry are different
+      // prompts: sharing one key let the admission coalesce the reply away.
       ...((input.latestWake.noAssistantOutputRetryCount ?? 0) > 0
-        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}` }
+        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}\0${noReply ? "admit" : "reply"}` }
         : input.emptyAssistantTurnRetry
-        ? { dedupeKey: createEmptyAssistantTurnRetryDedupeKey(input.latestWake) }
+        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0${noReply ? "admit" : "reply"}` }
         : {}),
       settleMs: 0,
       queueBehavior: "defer",
@@ -56,10 +59,10 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
       input: {
         path: { id: input.sessionID },
         body: {
-          noReply: input.forceNoReply === true || !input.latestWake.shouldReply,
+          noReply,
           ...input.latestWake.promptContext,
           parts: [
-            input.forceNoReply === true || !input.latestWake.shouldReply
+            noReply
               ? withInternalNoReplyMarker(createInternalAgentTextPart(notificationContent))
               : createInternalAgentTextPart(notificationContent),
           ],
@@ -72,6 +75,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
         const dispatchedWake = cloneParentWake(input.latestWake)
         dispatchedWake.dispatchedAt = dispatchStartedAt
         if (await input.hasRecordedPromptAfterDispatch(dispatchedWake)) {
+          markReplyDispatch(input, noReply, dispatchStartedAt)
           markRetainedNoReplyAdmission(input, dispatchStartedAt)
           input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
           log("[background-agent] Treated failed parent wake prompt as accepted after observing session history:", {
@@ -111,6 +115,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
     log("[background-agent] Sent deferred parent wake:", { sessionID: input.sessionID })
     delete input.latestWake.allowEmptyAssistantTurnRetry
     delete input.latestWake.gateHoldExpiresAt
+    markReplyDispatch(input, noReply, dispatchStartedAt)
     markRetainedNoReplyAdmission(input, dispatchStartedAt)
     input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
   } catch (error) {
@@ -136,6 +141,13 @@ function gateHoldRetryDelayMs(wake: PendingParentWake, expiresAt: number | undef
   }
   wake.gateHoldExpiresAt = expiresAt
   return PROMPT_GATE_HOLD_RETRY_MS
+}
+
+function markReplyDispatch(input: ParentWakePromptDispatchInput, noReply: boolean, dispatchStartedAt: number): void {
+  if (noReply) {
+    return
+  }
+  input.latestWake.replyDispatchedAt ??= dispatchStartedAt
 }
 
 function markRetainedNoReplyAdmission(input: ParentWakePromptDispatchInput, dispatchStartedAt: number): void {

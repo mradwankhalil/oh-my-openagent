@@ -174,15 +174,50 @@ export function hasAssistantOrToolOutputAfterParentWake(input: {
   readonly messages: readonly ParentWakeSessionMessage[] | undefined
   readonly wake: PendingParentWake
 }): boolean {
-  if (input.wake.dispatchedAt === undefined || !input.messages) {
+  const since = parentWakeAcknowledgementAnchor(input.wake)
+  if (since === undefined || !input.messages) {
     return false
   }
-  const dispatchedAt = input.wake.dispatchedAt
   return input.messages.some((message) => {
     const createdAt = getParentWakeMessageCreatedAt(message)
     return createdAt !== undefined
-      && createdAt >= dispatchedAt
+      && createdAt >= since
       && parentWakeMessageHasOutput(message)
+  })
+}
+
+// Earliest dispatch whose answer acknowledges this wake: the current dispatch,
+// or the first accepted reply dispatch when a retry re-tracked it later.
+export function parentWakeAcknowledgementAnchor(wake: PendingParentWake): number | undefined {
+  const anchors = [wake.dispatchedAt, wake.replyDispatchedAt].filter(
+    (value): value is number => value !== undefined,
+  )
+  return anchors.length > 0 ? Math.min(...anchors) : undefined
+}
+
+// An assistant turn that started after the dispatch and has neither completed
+// nor failed is the model answering the wake; first output can take far longer
+// than the recovery window (provider time-to-first-token), so it is not "no output".
+export function hasAssistantTurnInProgressAfterParentWake(input: {
+  readonly messages: readonly ParentWakeSessionMessage[] | undefined
+  readonly wake: PendingParentWake
+}): boolean {
+  const dispatchedAt = input.wake.dispatchedAt
+  if (dispatchedAt === undefined || !input.messages) {
+    return false
+  }
+  return input.messages.some((message) => {
+    if (getParentWakeMessageRole(message) !== "assistant") {
+      return false
+    }
+    const createdAt = getParentWakeMessageCreatedAt(message)
+    if (createdAt === undefined || createdAt < dispatchedAt) {
+      return false
+    }
+    const time = message.info?.time ?? message.time
+    const finish = message.info?.finish ?? message.finish
+    const error = message.info?.error ?? message.error
+    return time?.completed === undefined && finish === undefined && error === undefined
   })
 }
 

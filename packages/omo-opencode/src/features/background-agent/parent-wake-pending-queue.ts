@@ -63,6 +63,7 @@ export class ParentWakePendingQueue {
         delete pendingWake.noReplyAdmittedAt
         delete pendingWake.noAssistantOutputRetryCount
         delete pendingWake.deliveryStartedAt
+        delete pendingWake.replyDispatchedAt
       }
       return
     }
@@ -90,6 +91,7 @@ export class ParentWakePendingQueue {
       pendingWake.promptContext = latestWake.promptContext
       pendingWake.noReplyAdmittedAt ??= latestWake.noReplyAdmittedAt
       pendingWake.deliveryStartedAt ??= latestWake.deliveryStartedAt
+      pendingWake.replyDispatchedAt ??= latestWake.replyDispatchedAt
       pendingWake.toolCallDeferralStartedAt ??= latestWake.toolCallDeferralStartedAt
       pendingWake.allowEmptyAssistantTurnRetry ||= latestWake.allowEmptyAssistantTurnRetry
       if (latestWake.gateHoldExpiresAt !== undefined) {

@@ -14,6 +14,10 @@ export type PendingParentWake = {
   queuedAt?: number
   dispatchedAt?: number
   deliveryStartedAt?: number
+  // First accepted reply-producing dispatch of these notifications. It survives
+  // requeues so assistant output answering an earlier dispatch still
+  // acknowledges the wake after a retry re-tracks it with a later dispatchedAt.
+  replyDispatchedAt?: number
   noReplyAdmittedAt?: number
   toolCallDeferralStartedAt?: number
   allowEmptyAssistantTurnRetry?: boolean
@@ -40,6 +44,7 @@ export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
     ...(wake.queuedAt !== undefined ? { queuedAt: wake.queuedAt } : {}),
     ...(wake.dispatchedAt !== undefined ? { dispatchedAt: wake.dispatchedAt } : {}),
     ...(wake.deliveryStartedAt !== undefined ? { deliveryStartedAt: wake.deliveryStartedAt } : {}),
+    ...(wake.replyDispatchedAt !== undefined ? { replyDispatchedAt: wake.replyDispatchedAt } : {}),
     ...(wake.noReplyAdmittedAt !== undefined ? { noReplyAdmittedAt: wake.noReplyAdmittedAt } : {}),
     ...(wake.toolCallDeferralStartedAt !== undefined
       ? { toolCallDeferralStartedAt: wake.toolCallDeferralStartedAt }

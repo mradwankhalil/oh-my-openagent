@@ -8,6 +8,7 @@ import {
   getParentWakeSessionHistoryDeferralDecision,
   hasAssistantOrToolOutputAfterParentWake,
   hasAssistantOutputAfterParentWakeAdmission,
+  hasAssistantTurnInProgressAfterParentWake,
   hasRecordedParentWakePromptMessage,
   parentWakeUserMessageIsInProgress,
   type ToolWaitDeferralDecision,
@@ -96,6 +97,14 @@ export class ParentWakeSessionInspector {
   async hasAssistantOrToolOutputAfterDispatchedWake(sessionID: string, wake: PendingParentWake): Promise<boolean> {
     const messages = await this.loadMessages(sessionID)
     return hasAssistantOrToolOutputAfterParentWake({
+      messages,
+      wake,
+    })
+  }
+
+  async hasAssistantTurnInProgressAfterDispatchedWake(sessionID: string, wake: PendingParentWake): Promise<boolean> {
+    const messages = await this.loadMessages(sessionID)
+    return hasAssistantTurnInProgressAfterParentWake({
       messages,
       wake,
     })

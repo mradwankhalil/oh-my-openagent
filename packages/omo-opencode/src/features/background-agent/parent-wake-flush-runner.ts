@@ -48,6 +48,9 @@ export class ParentWakeFlushRunner {
     if (await this.dropAdmittedWakeConsumedByParent(sessionID, latestWake)) {
       return
     }
+    if (await this.dropReplyWakeAnsweredByParent(sessionID, latestWake)) {
+      return
+    }
     if (latestWake.shouldReply && parentWakeDeliveryTimeLeft(latestWake) === 0) {
       await sendParentWakeVisibleNotice(this.deps.notifierDeps, sessionID, latestWake)
       this.deps.pendingQueue.deleteWake(sessionID)
@@ -206,6 +209,24 @@ export class ParentWakeFlushRunner {
     this.deps.pendingQueue.deleteWake(sessionID)
     this.deps.dispatchedTracker.clearWake(sessionID)
     log("[background-agent] Dropped retained parent wake after parent consumed admitted notification:", { sessionID })
+    return true
+  }
+
+  // A wake requeued after its recovery window can still be answered by the turn
+  // its earlier dispatch started (slow first token). Once that output exists the
+  // wake is acknowledged: re-dispatching or depositing the deadline notice would
+  // show the owner the same completion twice.
+  private async dropReplyWakeAnsweredByParent(sessionID: string, latestWake: PendingParentWake): Promise<boolean> {
+    if (latestWake.replyDispatchedAt === undefined) {
+      return false
+    }
+    const anchoredWake = { ...latestWake, dispatchedAt: latestWake.replyDispatchedAt }
+    if (!(await this.deps.sessionInspector.hasAssistantOrToolOutputAfterDispatchedWake(sessionID, anchoredWake))) {
+      return false
+    }
+    this.deps.pendingQueue.deleteWake(sessionID)
+    this.deps.dispatchedTracker.clearWake(sessionID)
+    log("[background-agent] Dropped requeued parent wake after parent answered an earlier dispatch:", { sessionID })
     return true
   }
 
