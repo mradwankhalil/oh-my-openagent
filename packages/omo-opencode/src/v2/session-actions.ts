@@ -93,7 +93,7 @@ function toolDenies(value: unknown): Array<{ action: string; resource: string; e
 type SessionApi = {
   get: (input: { sessionID: string }) => Promise<Record<string, unknown>>
   context: (input: { sessionID: string }) => Promise<unknown>
-  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue"; files?: PromptFile[] }) => Promise<unknown>
+  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue"; files?: PromptFile[]; resume?: boolean }) => Promise<unknown>
   create: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
   interrupt: (input: { sessionID: string }) => Promise<unknown>
   switchAgent: (input: { sessionID: string; agent: string }) => Promise<unknown>
@@ -183,6 +183,9 @@ export async function sendPrompt(api: SessionApi, input: unknown): Promise<unkno
   const text = textFromPrompt(input)
   const files = filesFromPrompt(input)
   if (body.noReply === true) {
+    if (isRecord(body.metadata) && body.metadata.omoBackgroundTaskNotice === true) {
+      return api.prompt({ sessionID, text, resume: false })
+    }
     // V2 configuration is persistent control-plane state. The v1 recovery
     // sentinel is not a user request or context for the model/tool bridge.
     if (text.startsWith(AGENT_RECOVERY_PROMPT) && text.includes("<!-- OMO_INTERNAL_NOREPLY -->")) {
