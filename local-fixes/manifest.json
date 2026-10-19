@@ -914,6 +914,30 @@
       "markers": ["deliveryStartedAt: wake.deliveryStartedAt"],
       "overlapsWith": [],
       "orderNote": "State prerequisite for 61 and 62. New notifications reset the clock; retry copies preserve it. Existing active-parent defer controls and the deadline owner case remain green."
+    },
+    {
+      "id": "61-parent-wake-visible-retry",
+      "title": "Expose completion notices and distinguish confirmed no-output retry attempts",
+      "commit": "7cecb43eabf0e0d5513d110bb35154fd20ccd421",
+      "patch": "patches/61-parent-wake-visible-retry.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "An identical accepted payload is remembered by the semantic gate for 15 seconds even if no output follows. Give only confirmed failed attempts distinct identities, keep normal serialization and safety checks, and remove the outer hidden wrapper at reply/visible-notice delivery boundaries.",
+      "markers": ["visibleParentWakeText", "Visible parent wake notice not accepted"],
+      "overlapsWith": ["57-v2-visible-completion-notice", "60-parent-wake-delivery-clock"],
+      "orderNote": "After 57 and 60. Before 62. Owner test RED: host calls 1 instead of 2 inside the semantic hold, hidden wrapper true instead of false. GREEN through the unchanged shared prompt gate. Existing silent active-parent admissions remain unchanged."
+    },
+    {
+      "id": "62-parent-wake-bounded-recovery",
+      "title": "Retry idle-parent wakes with backoff and deliver a visible deadline fallback",
+      "commit": "7565d049f64d0a88d230ff172d4b388795e6e0fd",
+      "patch": "patches/62-parent-wake-bounded-recovery.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "The old one-retry budget silently discarded an unacknowledged completion. Bound reply retries to 60 seconds with 1/2/4/8-second capped backoff, acknowledge substantive output, and preserve the result as a visible durable user notice when the deadline expires.",
+      "markers": ["Finished parent wake recovery without another model turn", "retryDelayMs"],
+      "overlapsWith": ["57-v2-visible-completion-notice", "58-v2-parent-wake-timestamps", "59-parent-wake-empty-output", "60-parent-wake-delivery-clock", "61-parent-wake-visible-retry"],
+      "orderNote": "Last of six ordered wake units; never replay alone. Integration verification: 1015 tests/94 files and full typecheck pass; all edited files have no LSP errors/warnings (unchanged private-helper hint retained). Real isolated 2.0.32 host: retry 3663ms, successful output one turn, visible no-turn fallback at 60177ms; native browser confirms the durable user inbox item renders in chat. PR variant: 157 required tests and full typecheck pass. Two unrelated Windows session-db cleanup failures reproduce on untouched 502a4f0fd and are disclosed on PR #12. Stage only; no activation or restart."
     }
   ],
   "externalFixes": [

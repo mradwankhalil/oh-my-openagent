@@ -1,0 +1,231 @@
+From 7565d049f64d0a88d230ff172d4b388795e6e0fd Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:37 +0300
+Subject: [PATCH] fix(background-agent): bound parent wake retries and surface
+ deadline notices
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ .../parent-wake-flush-runner.ts               |  7 +++
+ .../background-agent/parent-wake-notifier.ts  |  4 +-
+ .../parent-wake-window-recovery.ts            | 19 ++++--
+ .../parent-wake-window-requeue.test.ts        | 60 +++++++++++++++++--
+ 4 files changed, 79 insertions(+), 11 deletions(-)
+
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
+index 8fb232fce..3fccbff09 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
+@@ -7,6 +7,7 @@ import { sendParentWakePrompt } from "./parent-wake-prompt-dispatch"
+ import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
+ import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
+ import type { ParentWakeNotifierDeps } from "./parent-wake-notifier-types"
++import { parentWakeDeliveryTimeLeft, sendParentWakeVisibleNotice } from "./parent-wake-visible-notice"
+ 
+ type ParentWakeFlushRunnerDeps = {
+   readonly notifierDeps: ParentWakeNotifierDeps
+@@ -47,6 +48,12 @@ export class ParentWakeFlushRunner {
+     if (await this.dropAdmittedWakeConsumedByParent(sessionID, latestWake)) {
+       return
+     }
++    if (latestWake.shouldReply && parentWakeDeliveryTimeLeft(latestWake) === 0) {
++      await sendParentWakeVisibleNotice(this.deps.notifierDeps, sessionID, latestWake)
++      this.deps.pendingQueue.deleteWake(sessionID)
++      this.deps.dispatchedTracker.clearWake(sessionID)
++      return
++    }
+     const emptyAssistantTurnRetry = latestWake.allowEmptyAssistantTurnRetry === true
+     const forceDispatchAfterActiveDefer = sessionActive && this.shouldForceDispatchAfterActiveDefer(latestWake)
+     if (sessionActive && !forceDispatchAfterActiveDefer) {
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-notifier.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-notifier.ts
+index 7e44b1a60..1c5fbdfaa 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-notifier.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-notifier.ts
+@@ -7,6 +7,7 @@ import { ParentWakePendingQueue } from "./parent-wake-pending-queue"
+ import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
+ import { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
+ import type { ParentWakeNotifierDeps, ParentWakeNotifierOptions } from "./parent-wake-notifier-types"
++import { sendParentWakeVisibleNotice } from "./parent-wake-visible-notice"
+ import {
+   handleDispatchedParentWakeWindowElapsed,
+   logParentWakeWindowRecoveryError,
+@@ -40,7 +41,8 @@ export class ParentWakeNotifier {
+           dispatchedTracker: this.dispatchedTracker,
+           sessionInspector: this.sessionInspector,
+           requeueWake: (latestWake) => this.requeueWake(sessionID, latestWake),
+-          scheduleFlush: () => this.schedulePendingParentWakeFlush(sessionID),
++          scheduleFlush: (delayMs) => this.schedulePendingParentWakeFlush(sessionID, delayMs),
++          sendVisibleNotice: (latestWake) => sendParentWakeVisibleNotice(deps, sessionID, latestWake),
+         }).catch((error: unknown) => {
+           logParentWakeWindowRecoveryError(
+             sessionID,
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
+index 05d23c8dd..be1ee22ca 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
+@@ -2,8 +2,7 @@ import { log } from "../../shared"
+ import type { PendingParentWake } from "./parent-wake-dedupe"
+ import type { ParentWakeDispatchedTracker } from "./parent-wake-dispatched-tracker"
+ import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
+-
+-const MAX_NO_ASSISTANT_OUTPUT_RETRIES = 1
++import { parentWakeDeliveryTimeLeft } from "./parent-wake-visible-notice"
+ 
+ type ParentWakeWindowRecoveryInput = {
+   readonly sessionID: string
+@@ -11,7 +10,8 @@ type ParentWakeWindowRecoveryInput = {
+   readonly dispatchedTracker: ParentWakeDispatchedTracker
+   readonly sessionInspector: ParentWakeSessionInspector
+   readonly requeueWake: (wake: PendingParentWake) => void
+-  readonly scheduleFlush: () => void
++  readonly scheduleFlush: (delayMs?: number) => void
++  readonly sendVisibleNotice: (wake: PendingParentWake) => Promise<void>
+ }
+ 
+ export async function handleDispatchedParentWakeWindowElapsed(
+@@ -31,9 +31,13 @@ export async function handleDispatchedParentWakeWindowElapsed(
+   }
+ 
+   const retryCount = input.wake.noAssistantOutputRetryCount ?? 0
+-  if (retryCount >= MAX_NO_ASSISTANT_OUTPUT_RETRIES) {
++  const timeLeft = parentWakeDeliveryTimeLeft(input.wake)
++  if (!input.wake.shouldReply || timeLeft === 0) {
++    if (input.wake.shouldReply) {
++      await input.sendVisibleNotice(input.wake)
++    }
+     input.dispatchedTracker.clearWake(input.sessionID)
+-    log("[background-agent] Stopped retrying parent wake after repeated no-output dispatch:", {
++    log("[background-agent] Finished parent wake recovery without another model turn:", {
+       sessionID: input.sessionID,
+       retryCount,
+     })
+@@ -43,10 +47,13 @@ export async function handleDispatchedParentWakeWindowElapsed(
+   input.dispatchedTracker.clearWake(input.sessionID)
+   input.wake.noAssistantOutputRetryCount = retryCount + 1
+   input.requeueWake(input.wake)
+-  input.scheduleFlush()
++  const retryDelayMs = Math.min(1_000 * 2 ** Math.min(retryCount, 3), 8_000, timeLeft)
++  input.scheduleFlush(retryDelayMs)
+   log("[background-agent] Requeued dispatched parent wake after no assistant output:", {
+     sessionID: input.sessionID,
+     retryCount: input.wake.noAssistantOutputRetryCount,
++    retryDelayMs,
++    timeLeft,
+   })
+ }
+ 
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-window-requeue.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-window-requeue.test.ts
+index 74b487039..23f3c247b 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-window-requeue.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-window-requeue.test.ts
+@@ -1,9 +1,11 @@
+-import { describe, expect, test } from "bun:test"
++/// <reference types="bun-types" />
++import { afterEach, describe, expect, setSystemTime, test } from "bun:test"
+ import {
+   releaseAllPromptAsyncReservationsForTesting,
+   releasePromptAsyncReservation,
+ } from "../../hooks/shared/prompt-async-gate"
+ import { ParentWakeNotifier } from "./parent-wake-notifier"
++import { storedMessagesToV1 } from "../../v2/message-shape"
+ 
+ type ParentWakeNotifierClientForTest = ConstructorParameters<typeof ParentWakeNotifier>[0]["client"]
+ type PromptAsyncCall = Parameters<ParentWakeNotifierClientForTest["session"]["promptAsync"]>[0]
+@@ -19,8 +21,11 @@ type SessionMessageStub = {
+ 
+ const FINAL_WAKE = "<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]\n</system-reminder>"
+ 
++afterEach(() => setSystemTime())
++
+ function createNotifier(options: {
+   readonly onPendingWakeRequeued?: (sessionID: string) => void
++  readonly messages?: () => readonly SessionMessageStub[]
+ } = {}): {
+   readonly notifier: ParentWakeNotifier
+   readonly promptAsyncCalls: readonly PromptAsyncCall[]
+@@ -37,7 +42,7 @@ function createNotifier(options: {
+   ]
+   const client: ParentWakeNotifierClientForTest = {
+     session: {
+-      messages: async () => ({ data: sessionMessages }),
++      messages: async () => ({ data: options.messages?.() ?? sessionMessages }),
+       status: async () => ({ data: {} }),
+       promptAsync: async (call: PromptAsyncCall) => {
+         promptAsyncCalls.push(call)
+@@ -132,7 +137,7 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
+     }
+   })
+ 
+-  test("#given a requeued parent wake still produces no assistant output #when the retry window elapses #then the wake is not retried forever", async () => {
++  test("#given a requeued parent wake still produces no assistant output #when its deadline elapses #then a visible no-turn fallback replaces further retries", async () => {
+     // given
+     const { notifier, promptAsyncCalls } = createNotifier()
+     const sessionID = "parent-window-no-continuation-retry-budget"
+@@ -149,16 +154,63 @@ describe("ParentWakeNotifier dispatched wake recovery", () => {
+       expect(promptAsyncCalls).toHaveLength(2)
+ 
+       // when
++      setSystemTime(new Date(Date.now() + 60_000))
+       await waitForTimer()
+ 
+       // then
+       expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
+       expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+       expect(notifier.getPendingParentWakeTimers().has(sessionID)).toBe(false)
+-      expect(promptAsyncCalls).toHaveLength(2)
++      expect(promptAsyncCalls).toHaveLength(3)
++      expect(promptAsyncCalls[2]?.body.noReply).toBe(true)
++      const text = promptAsyncCalls[2]?.body.parts[0]?.text ?? ""
++      expect(text.startsWith("<system-reminder>")).toBe(false)
++      expect(text.includes("<!-- OMO_INTERNAL_")).toBe(false)
++    } finally {
++      notifier.shutdown()
++      releaseAllPromptAsyncReservationsForTesting()
++    }
++  })
++
++  test("#given a dispatched wake produces assistant output #when the recovery window elapses #then it is acknowledged without a retry or fallback", async () => {
++    let messages: readonly SessionMessageStub[] = []
++    const { notifier, promptAsyncCalls } = createNotifier({ messages: () => messages })
++    const sessionID = "parent-window-output-acknowledged"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true)
++    try {
++      await notifier.flushPendingParentWake(sessionID)
++      messages = [{ info: { role: "assistant", finish: "stop", time: { created: Date.now() } }, parts: [{ type: "text", text: "Result received" }] }]
++      await waitForTimer()
++      expect(promptAsyncCalls).toHaveLength(1)
++      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
++      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
+     } finally {
+       notifier.shutdown()
+       releaseAllPromptAsyncReservationsForTesting()
+     }
+   })
++
++  for (const output of ["", "Native host result"]) {
++    test(`#given V2 stored assistant content is ${output ? "nonempty" : "empty"} #when the wake recovery reads the real bridge #then acknowledgement matches output`, async () => {
++      let messages: readonly SessionMessageStub[] = []
++      const { notifier, promptAsyncCalls } = createNotifier({ messages: () => messages })
++      const sessionID = `parent-native-output-${output.length}`
++      notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "sisyphus" }, true)
++      try {
++        await notifier.flushPendingParentWake(sessionID)
++        messages = storedMessagesToV1([{
++          id: "native-assistant", type: "assistant", finish: "stop",
++          time: { created: Date.now(), completed: Date.now() },
++          content: output ? [{ type: "text", text: output }] : [],
++        }], sessionID)
++        await waitForTimer()
++        expect(promptAsyncCalls).toHaveLength(1)
++        expect(notifier.getPendingParentWakes().has(sessionID)).toBe(output.length === 0)
++        expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
++      } finally {
++        notifier.shutdown()
++        releaseAllPromptAsyncReservationsForTesting()
++      }
++    })
++  }
+ })
+-- 
+2.55.0.windows.5
+

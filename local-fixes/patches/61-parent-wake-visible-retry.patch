@@ -1,0 +1,208 @@
+From 7cecb43eabf0e0d5513d110bb35154fd20ccd421 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:36 +0300
+Subject: [PATCH] fix(background-agent): make completion wakes visible and
+ retry failed attempts
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ .../parent-wake-empty-turn-requeue.test.ts    |  2 +-
+ ...rent-wake-final-notification-merge.test.ts |  2 +-
+ .../parent-wake-notifier-types.ts             |  1 +
+ .../parent-wake-prompt-dispatch.test.ts       | 25 ++++++++--
+ .../parent-wake-prompt-dispatch.ts            | 12 ++++-
+ .../parent-wake-visible-notice.ts             | 49 +++++++++++++++++++
+ 6 files changed, 84 insertions(+), 7 deletions(-)
+ create mode 100644 packages/omo-opencode/src/features/background-agent/parent-wake-visible-notice.ts
+
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-empty-turn-requeue.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-empty-turn-requeue.test.ts
+index 163347a75..f84564757 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-empty-turn-requeue.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-empty-turn-requeue.test.ts
+@@ -286,6 +286,6 @@ describe("BackgroundManager parent wake empty-turn recovery", () => {
+ 
+     // then
+     expect(promptCalls).toHaveLength(2)
+-    expect(JSON.stringify(promptCalls[1]?.body.parts)).toContain(notification)
++    expect(promptCalls[1]?.body.parts[0]?.text).toBe("done\n<!-- OMO_INTERNAL_INITIATOR -->")
+   })
+ })
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-final-notification-merge.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-final-notification-merge.test.ts
+index 6dac6b8b2..49a8a4229 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-final-notification-merge.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-final-notification-merge.test.ts
+@@ -80,7 +80,7 @@ describe("ParentWakeNotifier final notification merge", () => {
+       // then
+       expect(promptAsyncCalls).toHaveLength(1)
+       const notificationText = getPromptText(promptAsyncCalls[0])
+-      expect(notificationText.startsWith("<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]")).toBe(true)
++      expect(notificationText.startsWith("[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]")).toBe(true)
+       expect(notificationText).not.toContain("[BACKGROUND TASK RESULT READY]")
+       expect(notificationText).not.toContain("still in progress")
+       expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-notifier-types.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-notifier-types.ts
+index 966a31438..358bce797 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-notifier-types.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-notifier-types.ts
+@@ -3,6 +3,7 @@ import type { ParentWakePromptContext } from "./parent-wake-dedupe"
+ 
+ type ParentWakePromptBody = ParentWakePromptContext & {
+   readonly noReply?: boolean
++  readonly metadata?: { readonly omoBackgroundTaskNotice?: boolean }
+   readonly parts: { readonly type: "text"; readonly text: string }[]
+ }
+ 
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.test.ts
+index 042391e5d..5a3da62b0 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.test.ts
+@@ -1,3 +1,4 @@
++/// <reference types="bun-types" />
+ import { afterEach, describe, expect, setSystemTime, test } from "bun:test"
+ import { releaseAllPromptAsyncReservationsForTesting } from "../../hooks/shared/prompt-async-gate"
+ import { unsafeTestValue } from "../../../../../test-support/unsafe-test-value"
+@@ -14,12 +15,12 @@ afterEach(() => {
+   releaseAllPromptAsyncReservationsForTesting()
+ })
+ 
+-function createClient(): PromptDispatchClient {
++function createClient(calls: unknown[] = []): PromptDispatchClient {
+   return unsafeTestValue<PromptDispatchClient>({
+     session: {
+       status: async () => ({ data: { [SESSION_ID]: { type: "idle" } } }),
+       messages: async () => ({ data: [] }),
+-      promptAsync: async () => ({}),
++      promptAsync: async (input: unknown) => { calls.push(input); return {} },
+     },
+   })
+ }
+@@ -42,7 +43,7 @@ async function dispatchAt(nowMs: number, client: PromptDispatchClient, wake: Pen
+     sessionID: SESSION_ID,
+     latestWake: wake,
+     emptyAssistantTurnRetry: false,
+-    toolWaitDecision: { defer: false },
++    toolWaitDecision: { defer: false, skipPromptGateToolStateCheck: false },
+     getDispatchedWake: () => undefined,
+     hasRecordedPromptAfterDispatch: async () => false,
+     trackDispatchedWake: () => {},
+@@ -55,6 +56,24 @@ async function dispatchAt(nowMs: number, client: PromptDispatchClient, wake: Pen
+ }
+ 
+ describe("sendParentWakePrompt promptAsync gate hold", () => {
++  test("#given an idle reply-required completion #when dispatched #then its notice is visible instead of a system-reminder-only prompt", async () => {
++    const calls: unknown[] = []
++    await dispatchAt(HOLD_START_MS, createClient(calls), createWake("<system-reminder>\n[ALL BACKGROUND TASKS COMPLETE]\n</system-reminder>"))
++    const call = unsafeTestValue<{ body: { noReply: boolean; parts: { text: string }[] } }>(calls[0])
++    expect(call.body.noReply).toBe(false)
++    expect(call.body.parts[0]?.text.startsWith("<system-reminder>")).toBe(false)
++  })
++
++  test("#given a dispatch with confirmed no output #when retried inside the semantic hold #then the host receives a second prompt", async () => {
++    const calls: unknown[] = []
++    const client = createClient(calls)
++    const wake = createWake("<system-reminder>\n[ALL BACKGROUND TASKS COMPLETE]\n</system-reminder>")
++    await dispatchAt(HOLD_START_MS, client, wake)
++    wake.noAssistantOutputRetryCount = 1
++    await dispatchAt(HOLD_START_MS + 5_000, client, wake)
++    expect(calls).toHaveLength(2)
++  })
++
+   test("#given a live parent-wake hold #when a wake first meets it #then it backs off a full hold so the live turn can consume the admission", async () => {
+     // given
+     const client = createClient()
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
+index a50854717..43df25d01 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
+@@ -10,6 +10,7 @@ import { getErrorText } from "./error-classifier"
+ import { createEmptyAssistantTurnRetryDedupeKey } from "./parent-wake-history-state"
+ import { cloneParentWake, isRedundantParentWake, type PendingParentWake } from "./parent-wake-dedupe"
+ import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
++import { visibleParentWakeText } from "./parent-wake-visible-notice"
+ 
+ type ParentWakePromptDispatchInput = {
+   readonly client: PromptDispatchClient
+@@ -29,16 +30,23 @@ type ParentWakePromptDispatchInput = {
+ }
+ 
+ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput): Promise<void> {
+-  const notificationContent = input.latestWake.notifications.join("\n\n")
++  const notificationContent = input.forceNoReply === true || !input.latestWake.shouldReply
++    ? input.latestWake.notifications.join("\n\n")
++    : visibleParentWakeText(input.latestWake)
+   let dispatchStartedAt = Date.now()
+   try {
+     dispatchStartedAt = Date.now()
++    if (input.latestWake.shouldReply && input.forceNoReply !== true) {
++      input.latestWake.deliveryStartedAt ??= dispatchStartedAt
++    }
+     const promptResult = await dispatchInternalPrompt({
+       mode: "async",
+       client: input.client,
+       sessionID: input.sessionID,
+       source: "background-agent-parent-wake",
+-      ...(input.emptyAssistantTurnRetry
++      ...((input.latestWake.noAssistantOutputRetryCount ?? 0) > 0
++        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}` }
++        : input.emptyAssistantTurnRetry
+         ? { dedupeKey: createEmptyAssistantTurnRetryDedupeKey(input.latestWake) }
+         : {}),
+       settleMs: 0,
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-visible-notice.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-visible-notice.ts
+new file mode 100644
+index 000000000..7d4fddff7
+--- /dev/null
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-visible-notice.ts
+@@ -0,0 +1,49 @@
++import { dispatchInternalPrompt, isInternalPromptDispatchAccepted } from "../../hooks/shared/prompt-async-gate"
++import { log } from "../../shared"
++import type { PendingParentWake } from "./parent-wake-dedupe"
++import type { ParentWakeNotifierDeps } from "./parent-wake-notifier-types"
++
++const PARENT_WAKE_DELIVERY_DEADLINE_MS = 60_000
++
++export function parentWakeDeliveryTimeLeft(wake: PendingParentWake): number {
++  return Math.max(0, (wake.deliveryStartedAt ?? wake.dispatchedAt ?? Date.now()) + PARENT_WAKE_DELIVERY_DEADLINE_MS - Date.now())
++}
++
++export function visibleParentWakeText(wake: PendingParentWake): string {
++  return wake.notifications.map((notification) => {
++    const text = notification.trim()
++    return text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>")
++      ? text.slice("<system-reminder>".length, -"</system-reminder>".length).trim()
++      : text
++  }).join("\n\n")
++}
++
++export async function sendParentWakeVisibleNotice(
++  deps: Pick<ParentWakeNotifierDeps, "client" | "directory">,
++  sessionID: string,
++  wake: PendingParentWake,
++): Promise<void> {
++  const result = await dispatchInternalPrompt({
++    mode: "async",
++    client: deps.client,
++    sessionID,
++    source: "background-agent-parent-wake-notice",
++    settleMs: 0,
++    checkStatus: false,
++    checkToolState: false,
++    durableRetry: true,
++    input: {
++      path: { id: sessionID },
++      query: { directory: deps.directory },
++      body: {
++        noReply: true,
++        metadata: { omoBackgroundTaskNotice: true },
++        parts: [{ type: "text", text: visibleParentWakeText(wake) }],
++      },
++    },
++  })
++  if (!isInternalPromptDispatchAccepted(result)) {
++    throw new Error(`Visible parent wake notice not accepted: ${result.status}`)
++  }
++  log("[background-agent] Queued visible parent wake notice after delivery deadline:", { sessionID, status: result.status })
++}
+-- 
+2.55.0.windows.5
+
