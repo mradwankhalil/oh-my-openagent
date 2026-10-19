@@ -200,7 +200,7 @@ function parentWakeMessageHasOutput(message: ParentWakeSessionMessage): boolean 
   if (role === "assistant" && (finish === "error" || error !== undefined)) {
     return false
   }
-  if (!message.parts || message.parts.length === 0) {
+  if (!message.parts) {
     return role === "assistant"
   }
   return message.parts.some((part) => {

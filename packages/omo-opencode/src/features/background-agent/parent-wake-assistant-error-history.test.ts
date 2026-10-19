@@ -41,14 +41,15 @@ function createNotifier(messages: readonly SessionMessageStub[]): ParentWakeNoti
   )
 }
 
-describe("ParentWakeNotifier assistant error history", () => {
+for (const finish of ["error", "stop"]) describe(`ParentWakeNotifier assistant ${finish} history`, () => {
   afterEach(() => {
     releaseAllPromptAsyncReservationsForTesting()
   })
 
-  test("requeues late session.error when history only shows the injected wake plus an assistant error turn with no parts", async () => {
+  test(`requeues late session.error when history only shows the injected wake plus an empty assistant ${finish} turn`, async () => {
     // given
     const dispatchedAt = Date.now()
+    const assistantTime = { created: dispatchedAt + 2 }
     const notifier = createNotifier([
       {
         info: {
@@ -67,9 +68,9 @@ describe("ParentWakeNotifier assistant error history", () => {
       {
         info: {
           role: "assistant",
-          finish: "error",
-          error: { message: "late failure" },
-          time: { created: dispatchedAt + 2 },
+          finish,
+          ...(finish === "error" ? { error: { message: "late failure" } } : {}),
+          time: assistantTime,
         },
         parts: [],
       },
@@ -79,6 +80,7 @@ describe("ParentWakeNotifier assistant error history", () => {
     try {
       await notifier.flushPendingParentWake("parent-assistant-error-history")
       expect(notifier.getDispatchedParentWakes().has("parent-assistant-error-history")).toBe(true)
+      assistantTime.created = Date.now() + 1
 
       // when
       const requeued = await notifier.requeueDispatchedParentWake(
