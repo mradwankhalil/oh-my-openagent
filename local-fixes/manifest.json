@@ -1007,6 +1007,35 @@
       ],
       "overlapsWith": [],
       "orderNote": "Wired from v2/project-config.ts; independent of 52-64."
+    },
+    {
+      "id": "66-notification-template-escaping",
+      "title": "Completion reminder instructions carry no HTML-escapable characters",
+      "commit": "2de5acfbe62ed8f13f915b5a83c2f02642ee6462",
+      "patch": "patches/66-notification-template-escaping.patch",
+      "pr": null,
+      "upstreamIssue": null,
+      "why": "Chat rendering showed background_output(task_id=&quot;&lt;id>&quot;) in the completion reminder. Stored text was correct; the renderer escaped quotes/angle brackets. The instructions now name tool and argument without those characters.",
+      "markers": [
+        "with each task ID above as"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Independent."
+    },
+    {
+      "id": "67-parent-wake-slow-first-token-ack",
+      "title": "Acknowledge parent wakes answered after a slow first token; reply-mode retry identity",
+      "commit": "414ccd66b572b1e470a7b5643940d4a84c1ca9f7",
+      "patch": "patches/67-parent-wake-slow-first-token-ack.patch",
+      "pr": null,
+      "upstreamIssue": null,
+      "why": "Incident ses_eede11ad1ffe 2026-10-19: 20.2 s time-to-first-token exceeded the 5 s recovery window, the wake was requeued, the answer cleared only the dispatched entry, and the requeued wake re-dispatched (noReply admission + reply retry) so the owner saw the completion twice. In-progress turns now extend the window; replyDispatchedAt anchors acknowledgement across requeues; retry dedupe keys include reply mode so an admission cannot coalesce the reply.",
+      "markers": [
+        "dropReplyWakeAnsweredByParent",
+        "Extended dispatched parent wake window while assistant turn is in progress"
+      ],
+      "overlapsWith": [],
+      "orderNote": "Touches parent-wake files also touched by earlier wake fixes (61); apply after them."
     }
   ],
   "externalFixes": [

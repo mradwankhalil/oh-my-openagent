@@ -1,0 +1,95 @@
+From 2de5acfbe62ed8f13f915b5a83c2f02642ee6462 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Tue, 20 Oct 2026 01:36:55 +0300
+Subject: [PATCH] fix(background-agent): keep completion reminder free of
+ HTML-escapable characters
+
+The completion reminder is shown to the owner as chat text. Its
+instruction `background_output(task_id="<id>")` rendered as
+`background_output(task_id=&quot;&lt;id>&quot;)` because the chat
+renderer escaped the quotes and angle brackets. The stored message text
+is correct; OMO never escapes it. Name the tool and argument without
+quote or angle-bracket characters so no renderer can leak entities.
+---
+ ...kground-task-notification-template.test.ts | 32 +++++++++++++++++++
+ .../background-task-notification-template.ts  |  8 +++--
+ 2 files changed, 38 insertions(+), 2 deletions(-)
+
+diff --git a/packages/omo-opencode/src/features/background-agent/background-task-notification-template.test.ts b/packages/omo-opencode/src/features/background-agent/background-task-notification-template.test.ts
+index 4b1312508..e44a2c93f 100644
+--- a/packages/omo-opencode/src/features/background-agent/background-task-notification-template.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/background-task-notification-template.test.ts
+@@ -35,6 +35,38 @@ describe("buildBackgroundTaskNotificationText", () => {
+   describe("#given all sibling tasks completed with mixed outcomes", () => {
+   })
+ 
++  describe("#given a notification rendered as visible chat text", () => {
++    test("#when building partial and final notifications #then the instructions carry no HTML-escapable quote or angle-bracket characters", () => {
++      // given
++      const task = { id: "bg_abc123", description: "Index repo", status: "completed" as const }
++      const partial = buildBackgroundTaskNotificationText({
++        task,
++        duration: "1s",
++        statusText: "COMPLETED",
++        allComplete: false,
++        remainingCount: 1,
++        completedTasks: [],
++      })
++      const final = buildBackgroundTaskNotificationText({
++        task,
++        duration: "1s",
++        statusText: "COMPLETED",
++        allComplete: true,
++        remainingCount: 0,
++        completedTasks: [task],
++      })
++
++      // then
++      for (const notification of [partial, final]) {
++        const body = notification.replace(/^<system-reminder>\n/, "").replace(/\n<\/system-reminder>$/, "")
++        expect(body).toContain("`background_output`")
++        expect(body).not.toMatch(/["<>]/)
++      }
++      expect(partial).toContain("`task_id` `bg_abc123`")
++      expect(final).toContain("with each task ID above as `task_id`")
++    })
++  })
++
+   describe("#given all tasks completed with undefined descriptions", () => {
+     test("#when building the final notification #then it uses task ID as fallback instead of 'undefined'", () => {
+       // given
+diff --git a/packages/omo-opencode/src/features/background-agent/background-task-notification-template.ts b/packages/omo-opencode/src/features/background-agent/background-task-notification-template.ts
+index 109553fdf..a1d0f2164 100644
+--- a/packages/omo-opencode/src/features/background-agent/background-task-notification-template.ts
++++ b/packages/omo-opencode/src/features/background-agent/background-task-notification-template.ts
+@@ -58,6 +58,10 @@ function formatTaskSummaryLine(task: BackgroundTaskNotificationTask): string {
+   return `${baseLine}${statusSuffix}${timeline ? `\n${timeline}` : ""}`
+ }
+ 
++// The reminder is shown to the owner as chat text as well as read by the model.
++// Chat renderers HTML-escape quotes and angle brackets inside it and the escape
++// leaked as literal `&quot;&lt;id>&quot;`, so instructions name the tool and
++// argument without quote or angle-bracket characters.
+ export function buildBackgroundTaskNotificationText(input: {
+   task: BackgroundTaskNotificationTask
+   duration: string
+@@ -98,7 +102,7 @@ export function buildBackgroundTaskNotificationText(input: {
+       body = `${formatTaskSummaryLine(task)}\n`
+     }
+ 
+-    const resultCollectionInstruction = "All sibling background tasks are complete. Your next action should be to call `background_output(task_id=\"<id>\")` for each task ID above."
++    const resultCollectionInstruction = "All sibling background tasks are complete. Your next action should be to call `background_output` with each task ID above as `task_id`."
+ 
+     return `<system-reminder>
+ ${header}
+@@ -121,6 +125,6 @@ ${header}
+ **${remainingCount} task${remainingCount === 1 ? "" : "s"} still in progress.** You WILL be notified when ALL complete.
+ ${isFailure ? "**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry, cancel remaining tasks, or continue." : "Do NOT poll - continue productive work."}
+ 
+-Use \`background_output(task_id="${task.id}")\` to retrieve this result when ready.
++Use \`background_output\` with \`task_id\` \`${task.id}\` to retrieve this result when ready.
+ </system-reminder>`
+ }
+-- 
+2.55.0.windows.5
+

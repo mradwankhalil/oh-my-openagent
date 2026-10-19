@@ -1,0 +1,600 @@
+From 414ccd66b572b1e470a7b5643940d4a84c1ca9f7 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Tue, 20 Oct 2026 01:36:55 +0300
+Subject: [PATCH] fix(background-agent): acknowledge parent wakes answered
+ after a slow first token
+
+Incident ses_eede11ad1ffe (2026-10-19): the wake was dispatched in 10 ms,
+but the parent took 20.2 s to stream its first token. The 5 s recovery
+window saw no output and requeued the wake. The answer then cleared only
+the dispatched entry; the requeued pending wake re-dispatched as a noReply
+admission and a reply retry, and the owner saw the completion twice.
+
+- Recovery window: an assistant turn started after the dispatch that has
+  not completed or failed extends the window (bounded to 5 min) instead
+  of counting as "no output".
+- Record replyDispatchedAt on the first accepted reply dispatch and keep
+  it across requeues (reset when new notifications merge in). A requeued
+  wake whose earlier dispatch was answered is dropped before any
+  re-dispatch or deadline notice.
+- Retry dedupe keys carry the reply mode, so a noReply admission can no
+  longer coalesce away the reply dispatch of the same retry.
+---
+ .../background-agent/parent-wake-dedupe.ts    |   5 +
+ .../parent-wake-flush-runner.ts               |  21 ++
+ .../parent-wake-pending-queue.ts              |   2 +
+ .../parent-wake-prompt-dispatch.ts            |  22 +-
+ .../parent-wake-session-history.ts            |  41 ++-
+ .../parent-wake-session-inspector.ts          |   9 +
+ .../parent-wake-slow-first-token.test.ts      | 283 ++++++++++++++++++
+ .../parent-wake-window-recovery.ts            |  15 +
+ 8 files changed, 390 insertions(+), 8 deletions(-)
+ create mode 100644 packages/omo-opencode/src/features/background-agent/parent-wake-slow-first-token.test.ts
+
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
+index 0cbd8568b..6fb7cad2f 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
+@@ -14,6 +14,10 @@ export type PendingParentWake = {
+   queuedAt?: number
+   dispatchedAt?: number
+   deliveryStartedAt?: number
++  // First accepted reply-producing dispatch of these notifications. It survives
++  // requeues so assistant output answering an earlier dispatch still
++  // acknowledges the wake after a retry re-tracks it with a later dispatchedAt.
++  replyDispatchedAt?: number
+   noReplyAdmittedAt?: number
+   toolCallDeferralStartedAt?: number
+   allowEmptyAssistantTurnRetry?: boolean
+@@ -40,6 +44,7 @@ export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
+     ...(wake.queuedAt !== undefined ? { queuedAt: wake.queuedAt } : {}),
+     ...(wake.dispatchedAt !== undefined ? { dispatchedAt: wake.dispatchedAt } : {}),
+     ...(wake.deliveryStartedAt !== undefined ? { deliveryStartedAt: wake.deliveryStartedAt } : {}),
++    ...(wake.replyDispatchedAt !== undefined ? { replyDispatchedAt: wake.replyDispatchedAt } : {}),
+     ...(wake.noReplyAdmittedAt !== undefined ? { noReplyAdmittedAt: wake.noReplyAdmittedAt } : {}),
+     ...(wake.toolCallDeferralStartedAt !== undefined
+       ? { toolCallDeferralStartedAt: wake.toolCallDeferralStartedAt }
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
+index 3fccbff09..5ad5a401a 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-flush-runner.ts
+@@ -48,6 +48,9 @@ export class ParentWakeFlushRunner {
+     if (await this.dropAdmittedWakeConsumedByParent(sessionID, latestWake)) {
+       return
+     }
++    if (await this.dropReplyWakeAnsweredByParent(sessionID, latestWake)) {
++      return
++    }
+     if (latestWake.shouldReply && parentWakeDeliveryTimeLeft(latestWake) === 0) {
+       await sendParentWakeVisibleNotice(this.deps.notifierDeps, sessionID, latestWake)
+       this.deps.pendingQueue.deleteWake(sessionID)
+@@ -209,6 +212,24 @@ export class ParentWakeFlushRunner {
+     return true
+   }
+ 
++  // A wake requeued after its recovery window can still be answered by the turn
++  // its earlier dispatch started (slow first token). Once that output exists the
++  // wake is acknowledged: re-dispatching or depositing the deadline notice would
++  // show the owner the same completion twice.
++  private async dropReplyWakeAnsweredByParent(sessionID: string, latestWake: PendingParentWake): Promise<boolean> {
++    if (latestWake.replyDispatchedAt === undefined) {
++      return false
++    }
++    const anchoredWake = { ...latestWake, dispatchedAt: latestWake.replyDispatchedAt }
++    if (!(await this.deps.sessionInspector.hasAssistantOrToolOutputAfterDispatchedWake(sessionID, anchoredWake))) {
++      return false
++    }
++    this.deps.pendingQueue.deleteWake(sessionID)
++    this.deps.dispatchedTracker.clearWake(sessionID)
++    log("[background-agent] Dropped requeued parent wake after parent answered an earlier dispatch:", { sessionID })
++    return true
++  }
++
+   private async sendParentWakePrompt(
+     sessionID: string,
+     latestWake: PendingParentWake,
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
+index c6bb4cc1d..7b98b5fe7 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
+@@ -63,6 +63,7 @@ export class ParentWakePendingQueue {
+         delete pendingWake.noReplyAdmittedAt
+         delete pendingWake.noAssistantOutputRetryCount
+         delete pendingWake.deliveryStartedAt
++        delete pendingWake.replyDispatchedAt
+       }
+       return
+     }
+@@ -90,6 +91,7 @@ export class ParentWakePendingQueue {
+       pendingWake.promptContext = latestWake.promptContext
+       pendingWake.noReplyAdmittedAt ??= latestWake.noReplyAdmittedAt
+       pendingWake.deliveryStartedAt ??= latestWake.deliveryStartedAt
++      pendingWake.replyDispatchedAt ??= latestWake.replyDispatchedAt
+       pendingWake.toolCallDeferralStartedAt ??= latestWake.toolCallDeferralStartedAt
+       pendingWake.allowEmptyAssistantTurnRetry ||= latestWake.allowEmptyAssistantTurnRetry
+       if (latestWake.gateHoldExpiresAt !== undefined) {
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
+index 43df25d01..0e30fb87b 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-prompt-dispatch.ts
+@@ -30,7 +30,8 @@ type ParentWakePromptDispatchInput = {
+ }
+ 
+ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput): Promise<void> {
+-  const notificationContent = input.forceNoReply === true || !input.latestWake.shouldReply
++  const noReply = input.forceNoReply === true || !input.latestWake.shouldReply
++  const notificationContent = noReply
+     ? input.latestWake.notifications.join("\n\n")
+     : visibleParentWakeText(input.latestWake)
+   let dispatchStartedAt = Date.now()
+@@ -44,10 +45,12 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
+       client: input.client,
+       sessionID: input.sessionID,
+       source: "background-agent-parent-wake",
++      // A noReply admission and a reply dispatch of the same retry are different
++      // prompts: sharing one key let the admission coalesce the reply away.
+       ...((input.latestWake.noAssistantOutputRetryCount ?? 0) > 0
+-        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}` }
++        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}\0${noReply ? "admit" : "reply"}` }
+         : input.emptyAssistantTurnRetry
+-        ? { dedupeKey: createEmptyAssistantTurnRetryDedupeKey(input.latestWake) }
++        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0${noReply ? "admit" : "reply"}` }
+         : {}),
+       settleMs: 0,
+       queueBehavior: "defer",
+@@ -56,10 +59,10 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
+       input: {
+         path: { id: input.sessionID },
+         body: {
+-          noReply: input.forceNoReply === true || !input.latestWake.shouldReply,
++          noReply,
+           ...input.latestWake.promptContext,
+           parts: [
+-            input.forceNoReply === true || !input.latestWake.shouldReply
++            noReply
+               ? withInternalNoReplyMarker(createInternalAgentTextPart(notificationContent))
+               : createInternalAgentTextPart(notificationContent),
+           ],
+@@ -72,6 +75,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
+         const dispatchedWake = cloneParentWake(input.latestWake)
+         dispatchedWake.dispatchedAt = dispatchStartedAt
+         if (await input.hasRecordedPromptAfterDispatch(dispatchedWake)) {
++          markReplyDispatch(input, noReply, dispatchStartedAt)
+           markRetainedNoReplyAdmission(input, dispatchStartedAt)
+           input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+           log("[background-agent] Treated failed parent wake prompt as accepted after observing session history:", {
+@@ -111,6 +115,7 @@ export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput)
+     log("[background-agent] Sent deferred parent wake:", { sessionID: input.sessionID })
+     delete input.latestWake.allowEmptyAssistantTurnRetry
+     delete input.latestWake.gateHoldExpiresAt
++    markReplyDispatch(input, noReply, dispatchStartedAt)
+     markRetainedNoReplyAdmission(input, dispatchStartedAt)
+     input.trackDispatchedWake(createTrackedDispatchedWake(input.latestWake, input.forceNoReply), dispatchStartedAt)
+   } catch (error) {
+@@ -138,6 +143,13 @@ function gateHoldRetryDelayMs(wake: PendingParentWake, expiresAt: number | undef
+   return PROMPT_GATE_HOLD_RETRY_MS
+ }
+ 
++function markReplyDispatch(input: ParentWakePromptDispatchInput, noReply: boolean, dispatchStartedAt: number): void {
++  if (noReply) {
++    return
++  }
++  input.latestWake.replyDispatchedAt ??= dispatchStartedAt
++}
++
+ function markRetainedNoReplyAdmission(input: ParentWakePromptDispatchInput, dispatchStartedAt: number): void {
+   if (input.retainPendingWake !== true || input.forceNoReply !== true || !input.latestWake.shouldReply) {
+     return
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
+index 5600f1ec2..c4797271c 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
+@@ -174,18 +174,53 @@ export function hasAssistantOrToolOutputAfterParentWake(input: {
+   readonly messages: readonly ParentWakeSessionMessage[] | undefined
+   readonly wake: PendingParentWake
+ }): boolean {
+-  if (input.wake.dispatchedAt === undefined || !input.messages) {
++  const since = parentWakeAcknowledgementAnchor(input.wake)
++  if (since === undefined || !input.messages) {
+     return false
+   }
+-  const dispatchedAt = input.wake.dispatchedAt
+   return input.messages.some((message) => {
+     const createdAt = getParentWakeMessageCreatedAt(message)
+     return createdAt !== undefined
+-      && createdAt >= dispatchedAt
++      && createdAt >= since
+       && parentWakeMessageHasOutput(message)
+   })
+ }
+ 
++// Earliest dispatch whose answer acknowledges this wake: the current dispatch,
++// or the first accepted reply dispatch when a retry re-tracked it later.
++export function parentWakeAcknowledgementAnchor(wake: PendingParentWake): number | undefined {
++  const anchors = [wake.dispatchedAt, wake.replyDispatchedAt].filter(
++    (value): value is number => value !== undefined,
++  )
++  return anchors.length > 0 ? Math.min(...anchors) : undefined
++}
++
++// An assistant turn that started after the dispatch and has neither completed
++// nor failed is the model answering the wake; first output can take far longer
++// than the recovery window (provider time-to-first-token), so it is not "no output".
++export function hasAssistantTurnInProgressAfterParentWake(input: {
++  readonly messages: readonly ParentWakeSessionMessage[] | undefined
++  readonly wake: PendingParentWake
++}): boolean {
++  const dispatchedAt = input.wake.dispatchedAt
++  if (dispatchedAt === undefined || !input.messages) {
++    return false
++  }
++  return input.messages.some((message) => {
++    if (getParentWakeMessageRole(message) !== "assistant") {
++      return false
++    }
++    const createdAt = getParentWakeMessageCreatedAt(message)
++    if (createdAt === undefined || createdAt < dispatchedAt) {
++      return false
++    }
++    const time = message.info?.time ?? message.time
++    const finish = message.info?.finish ?? message.finish
++    const error = message.info?.error ?? message.error
++    return time?.completed === undefined && finish === undefined && error === undefined
++  })
++}
++
+ function getParentWakeMessageRole(message: ParentWakeSessionMessage): string | undefined {
+   return message.info?.role ?? message.role
+ }
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-session-inspector.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-session-inspector.ts
+index b40240137..06eaae7ae 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-session-inspector.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-session-inspector.ts
+@@ -8,6 +8,7 @@ import {
+   getParentWakeSessionHistoryDeferralDecision,
+   hasAssistantOrToolOutputAfterParentWake,
+   hasAssistantOutputAfterParentWakeAdmission,
++  hasAssistantTurnInProgressAfterParentWake,
+   hasRecordedParentWakePromptMessage,
+   parentWakeUserMessageIsInProgress,
+   type ToolWaitDeferralDecision,
+@@ -101,6 +102,14 @@ export class ParentWakeSessionInspector {
+     })
+   }
+ 
++  async hasAssistantTurnInProgressAfterDispatchedWake(sessionID: string, wake: PendingParentWake): Promise<boolean> {
++    const messages = await this.loadMessages(sessionID)
++    return hasAssistantTurnInProgressAfterParentWake({
++      messages,
++      wake,
++    })
++  }
++
+   shutdown(): void {
+     this.recentParentSessionActivity.clear()
+   }
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-slow-first-token.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-slow-first-token.test.ts
+new file mode 100644
+index 000000000..8810f9dd0
+--- /dev/null
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-slow-first-token.test.ts
+@@ -0,0 +1,283 @@
++/// <reference types="bun-types" />
++import { afterEach, describe, expect, setSystemTime, test } from "bun:test"
++import {
++  releaseAllPromptAsyncReservationsForTesting,
++  releasePromptAsyncReservation,
++} from "../../hooks/shared/prompt-async-gate"
++import { unsafeTestValue } from "../../../../../test-support/unsafe-test-value"
++import type { PromptDispatchClient } from "@oh-my-opencode/utils/prompt-async-gate/types"
++import type { PendingParentWake } from "./parent-wake-dedupe"
++import { ParentWakeNotifier } from "./parent-wake-notifier"
++import { sendParentWakePrompt } from "./parent-wake-prompt-dispatch"
++import { storedMessagesToV1 } from "../../v2/message-shape"
++
++// Incident ses_eede11ad1ffe (2026-10-19): the parent (native "general" agent) took
++// 20.2 s from the wake prompt to its first streamed token. The 5 s recovery window
++// saw no output, requeued the wake, and the requeued wake later re-dispatched while
++// the answer already existed, so the owner saw the completion twice.
++
++type ParentWakeNotifierClientForTest = ConstructorParameters<typeof ParentWakeNotifier>[0]["client"]
++type PromptAsyncCall = Parameters<ParentWakeNotifierClientForTest["session"]["promptAsync"]>[0]
++
++const FINAL_WAKE = "<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]\n</system-reminder>"
++
++afterEach(() => {
++  setSystemTime()
++  releaseAllPromptAsyncReservationsForTesting()
++})
++
++function createNotifier(messages: () => readonly unknown[]): {
++  readonly notifier: ParentWakeNotifier
++  readonly promptAsyncCalls: PromptAsyncCall[]
++  readonly promptAsyncCallTimes: number[]
++} {
++  const promptAsyncCalls: PromptAsyncCall[] = []
++  const promptAsyncCallTimes: number[] = []
++  const client: ParentWakeNotifierClientForTest = {
++    session: {
++      messages: async () => ({ data: messages() }),
++      status: async () => ({ data: {} }),
++      promptAsync: async (call: PromptAsyncCall) => {
++        promptAsyncCalls.push(call)
++        promptAsyncCallTimes.push(performance.now())
++        return { data: {} }
++      },
++    },
++  }
++  const notifier = new ParentWakeNotifier(
++    {
++      client,
++      directory: "/tmp/test-omo",
++      enqueueNotificationForParent: async (_sessionID, operation) => {
++        await operation()
++      },
++    },
++    {
++      pendingRetryMs: 1_000,
++      acceptedMessageSkewMs: 100,
++      toolCallDeferMaxMs: 5_000,
++      failureRequeueWindowMs: 1,
++      userMessageInProgressWindowMs: 0,
++    },
++  )
++  return { notifier, promptAsyncCalls, promptAsyncCallTimes }
++}
++
++async function waitForTimer(): Promise<void> {
++  await new Promise<void>((resolve) => {
++    setTimeout(resolve, 10)
++  })
++}
++
++function releaseParentWakeHold(sessionID: string): void {
++  releasePromptAsyncReservation(sessionID, "test:simulate-expired-parent-wake-hold", {
++    reservedBy: "background-agent-parent-wake",
++  })
++}
++
++function streamingAssistant(sessionID: string, createdAt: number): unknown[] {
++  return storedMessagesToV1([{
++    id: "native-assistant-streaming", type: "assistant", agent: "general",
++    time: { created: createdAt },
++    content: [],
++  }], sessionID)
++}
++
++function answeredAssistant(sessionID: string, createdAt: number): unknown[] {
++  return storedMessagesToV1([{
++    id: "native-assistant-answer", type: "assistant", agent: "general", finish: "stop",
++    time: { created: createdAt, completed: createdAt + 24_000 },
++    content: [{ type: "text", text: "The wake arrived as General. Fetching the result:" }],
++  }], sessionID)
++}
++
++describe("parent wake answered after a slow first token", () => {
++  test("#given the wake turn has started but not streamed yet #when the recovery window elapses #then the wake stays dispatched instead of being requeued", async () => {
++    // given
++    let messages: readonly unknown[] = []
++    const { notifier, promptAsyncCalls } = createNotifier(() => messages)
++    const sessionID = "parent-slow-first-token"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "general" }, true)
++
++    try {
++      await notifier.flushPendingParentWake(sessionID)
++      expect(promptAsyncCalls).toHaveLength(1)
++      messages = streamingAssistant(sessionID, Date.now())
++
++      // when
++      await waitForTimer()
++
++      // then
++      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
++      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(true)
++
++      // when the first token finally arrives
++      messages = answeredAssistant(sessionID, Date.now())
++      await waitForTimer()
++
++      // then it is acknowledged with no retry and no fallback notice
++      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
++      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
++      expect(promptAsyncCalls).toHaveLength(1)
++    } finally {
++      notifier.shutdown()
++    }
++  })
++
++  test("#given a wake was requeued before its answer streamed #when the parent answers the first dispatch #then the requeued wake is dropped instead of re-dispatched", async () => {
++    // given
++    let messages: readonly unknown[] = []
++    const { notifier, promptAsyncCalls } = createNotifier(() => messages)
++    const sessionID = "parent-answered-after-requeue"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "general" }, true)
++
++    try {
++      await notifier.flushPendingParentWake(sessionID)
++      const firstDispatchAt = notifier.getDispatchedParentWakes().get(sessionID)?.dispatchedAt ?? 0
++      await waitForTimer()
++      expect(notifier.getPendingParentWakes().get(sessionID)?.noAssistantOutputRetryCount).toBe(1)
++
++      // when
++      messages = answeredAssistant(sessionID, firstDispatchAt + 41)
++      releaseParentWakeHold(sessionID)
++      await notifier.flushPendingParentWake(sessionID)
++
++      // then
++      expect(promptAsyncCalls).toHaveLength(1)
++      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
++      expect(notifier.getDispatchedParentWakes().has(sessionID)).toBe(false)
++    } finally {
++      notifier.shutdown()
++    }
++  })
++
++  test("#given a requeued wake whose first dispatch was answered #when the delivery deadline passes #then no fallback notice is deposited", async () => {
++    // given
++    let messages: readonly unknown[] = []
++    const { notifier, promptAsyncCalls } = createNotifier(() => messages)
++    const sessionID = "parent-answered-before-deadline"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "general" }, true)
++
++    try {
++      await notifier.flushPendingParentWake(sessionID)
++      const firstDispatchAt = notifier.getDispatchedParentWakes().get(sessionID)?.dispatchedAt ?? 0
++      await waitForTimer()
++      messages = answeredAssistant(sessionID, firstDispatchAt + 20_212)
++
++      // when
++      setSystemTime(new Date(Date.now() + 60_000))
++      await notifier.flushPendingParentWake(sessionID)
++
++      // then
++      expect(promptAsyncCalls).toHaveLength(1)
++      expect(notifier.getPendingParentWakes().has(sessionID)).toBe(false)
++    } finally {
++      notifier.shutdown()
++    }
++  })
++
++  test("#given a requeued wake with new notifications merged in #when the parent answered the earlier dispatch #then the new notifications are still delivered", async () => {
++    // given
++    let messages: readonly unknown[] = []
++    const { notifier, promptAsyncCalls } = createNotifier(() => messages)
++    const sessionID = "parent-answered-new-notification"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "general" }, true)
++
++    try {
++      await notifier.flushPendingParentWake(sessionID)
++      const firstDispatchAt = notifier.getDispatchedParentWakes().get(sessionID)?.dispatchedAt ?? 0
++      await waitForTimer()
++      messages = answeredAssistant(sessionID, firstDispatchAt + 41)
++      notifier.queuePendingParentWake(sessionID, "<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]\nsecond batch\n</system-reminder>", { agent: "general" }, true)
++
++      // when
++      releaseParentWakeHold(sessionID)
++      await notifier.flushPendingParentWake(sessionID)
++
++      // then
++      expect(promptAsyncCalls).toHaveLength(2)
++    } finally {
++      notifier.shutdown()
++    }
++  })
++})
++
++describe("parent wake retry identity", () => {
++  const SESSION_ID = "parent-retry-identity"
++  const START_MS = new Date("2026-10-19T22:08:14.357Z").getTime()
++
++  function createClient(calls: unknown[]): PromptDispatchClient {
++    return unsafeTestValue<PromptDispatchClient>({
++      session: {
++        status: async () => ({ data: { [SESSION_ID]: { type: "idle" } } }),
++        messages: async () => ({ data: [] }),
++        promptAsync: async (input: unknown) => { calls.push(input); return {} },
++      },
++    })
++  }
++
++  async function dispatchAt(nowMs: number, client: PromptDispatchClient, wake: PendingParentWake, forceNoReply: boolean): Promise<void> {
++    setSystemTime(new Date(nowMs))
++    await sendParentWakePrompt({
++      client,
++      directory: "/tmp",
++      sessionID: SESSION_ID,
++      latestWake: wake,
++      forceNoReply,
++      retainPendingWake: forceNoReply,
++      emptyAssistantTurnRetry: false,
++      toolWaitDecision: { defer: false, skipPromptGateToolStateCheck: true },
++      getDispatchedWake: () => undefined,
++      hasRecordedPromptAfterDispatch: async () => false,
++      trackDispatchedWake: () => {},
++      requeueWake: () => {},
++      scheduleFlush: () => {},
++    })
++  }
++
++  test("#given a retry was admitted as noReply #when the reply dispatch of the same retry follows inside the semantic hold #then it reaches the host instead of coalescing", async () => {
++    // given
++    const calls: unknown[] = []
++    const client = createClient(calls)
++    const wake: PendingParentWake = {
++      notifications: [FINAL_WAKE],
++      promptContext: { agent: "general" },
++      shouldReply: true,
++      queuedAt: START_MS,
++      noAssistantOutputRetryCount: 1,
++    }
++    await dispatchAt(START_MS, client, wake, true)
++    expect(calls).toHaveLength(1)
++
++    // when (the log showed the reply 4.8 s later, after the 2 s hold expired)
++    await dispatchAt(START_MS + 4_844, client, wake, false)
++
++    // then
++    expect(calls).toHaveLength(2)
++    const reply = unsafeTestValue<{ body: { noReply: boolean } }>(calls[1])
++    expect(reply.body.noReply).toBe(false)
++  })
++})
++
++describe("first parent wake dispatch latency", () => {
++  test("#given an idle parent and a fresh completion #when the wake flushes #then promptAsync is called promptly without a gate hold or coalesce", async () => {
++    // given
++    const { notifier, promptAsyncCalls, promptAsyncCallTimes } = createNotifier(() => [])
++    const sessionID = "parent-first-wake-latency"
++    notifier.queuePendingParentWake(sessionID, FINAL_WAKE, { agent: "general" }, true, 60_000)
++
++    try {
++      // when
++      const startedAt = performance.now()
++      await notifier.flushPendingParentWake(sessionID)
++
++      // then: only the 150 ms idle settle stands between flush and dispatch
++      expect(promptAsyncCalls).toHaveLength(1)
++      expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
++      expect((promptAsyncCallTimes[0] ?? Infinity) - startedAt).toBeLessThan(1_000)
++      expect(notifier.getDispatchedParentWakes().get(sessionID)?.replyDispatchedAt).toBeDefined()
++    } finally {
++      notifier.shutdown()
++    }
++  })
++})
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
+index be1ee22ca..4b629998b 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-window-recovery.ts
+@@ -4,6 +4,10 @@ import type { ParentWakeDispatchedTracker } from "./parent-wake-dispatched-track
+ import type { ParentWakeSessionInspector } from "./parent-wake-session-inspector"
+ import { parentWakeDeliveryTimeLeft } from "./parent-wake-visible-notice"
+ 
++// How long an in-progress assistant turn keeps a dispatched wake alive before the
++// usual no-output recovery takes over again (a stuck turn must not hide the wake).
++const IN_PROGRESS_TURN_MAX_EXTENSION_MS = 300_000
++
+ type ParentWakeWindowRecoveryInput = {
+   readonly sessionID: string
+   readonly wake: PendingParentWake
+@@ -30,6 +34,17 @@ export async function handleDispatchedParentWakeWindowElapsed(
+     return
+   }
+ 
++  if (
++    Date.now() - (input.wake.dispatchedAt ?? Date.now()) < IN_PROGRESS_TURN_MAX_EXTENSION_MS
++    && await input.sessionInspector.hasAssistantTurnInProgressAfterDispatchedWake(input.sessionID, input.wake)
++  ) {
++    input.dispatchedTracker.refreshWakeTimer(input.sessionID)
++    log("[background-agent] Extended dispatched parent wake window while assistant turn is in progress:", {
++      sessionID: input.sessionID,
++    })
++    return
++  }
++
+   const retryCount = input.wake.noAssistantOutputRetryCount ?? 0
+   const timeLeft = parentWakeDeliveryTimeLeft(input.wake)
+   if (!input.wake.shouldReply || timeLeft === 0) {
+-- 
+2.55.0.windows.5
+
