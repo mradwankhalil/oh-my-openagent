@@ -13,6 +13,12 @@ export const MIN_RUNTIME_BEFORE_STALE_MS = 30_000
 export const DEFAULT_SESSION_GONE_TIMEOUT_MS = 60_000
 export const MIN_IDLE_TIME_MS = 5000
 export const POLLING_INTERVAL_MS = 3000
+// How long a running child may stay continuously idle with open todos before its
+// terminal assistant message is accepted as the final response and the task
+// completes. The todo-continuation-enforcer resumes a parent within seconds
+// (2 s countdown + 5 s cooldown), so 30 s bounds the wait without racing it;
+// before this the only escape was the 45 min stale deadline.
+export const TODO_CONTINUATION_GRACE_MS = 30_000
 export const TASK_CLEANUP_DELAY_MS = 10 * 60 * 1000
 export const TMUX_CALLBACK_DELAY_MS = 200
 
