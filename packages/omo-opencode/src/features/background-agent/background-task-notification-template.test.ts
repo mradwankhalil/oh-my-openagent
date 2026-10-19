@@ -35,6 +35,38 @@ describe("buildBackgroundTaskNotificationText", () => {
   describe("#given all sibling tasks completed with mixed outcomes", () => {
   })
 
+  describe("#given a notification rendered as visible chat text", () => {
+    test("#when building partial and final notifications #then the instructions carry no HTML-escapable quote or angle-bracket characters", () => {
+      // given
+      const task = { id: "bg_abc123", description: "Index repo", status: "completed" as const }
+      const partial = buildBackgroundTaskNotificationText({
+        task,
+        duration: "1s",
+        statusText: "COMPLETED",
+        allComplete: false,
+        remainingCount: 1,
+        completedTasks: [],
+      })
+      const final = buildBackgroundTaskNotificationText({
+        task,
+        duration: "1s",
+        statusText: "COMPLETED",
+        allComplete: true,
+        remainingCount: 0,
+        completedTasks: [task],
+      })
+
+      // then
+      for (const notification of [partial, final]) {
+        const body = notification.replace(/^<system-reminder>\n/, "").replace(/\n<\/system-reminder>$/, "")
+        expect(body).toContain("`background_output`")
+        expect(body).not.toMatch(/["<>]/)
+      }
+      expect(partial).toContain("`task_id` `bg_abc123`")
+      expect(final).toContain("with each task ID above as `task_id`")
+    })
+  })
+
   describe("#given all tasks completed with undefined descriptions", () => {
     test("#when building the final notification #then it uses task ID as fallback instead of 'undefined'", () => {
       // given

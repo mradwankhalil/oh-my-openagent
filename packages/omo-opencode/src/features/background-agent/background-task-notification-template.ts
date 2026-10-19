@@ -58,6 +58,10 @@ function formatTaskSummaryLine(task: BackgroundTaskNotificationTask): string {
   return `${baseLine}${statusSuffix}${timeline ? `\n${timeline}` : ""}`
 }
 
+// The reminder is shown to the owner as chat text as well as read by the model.
+// Chat renderers HTML-escape quotes and angle brackets inside it and the escape
+// leaked as literal `&quot;&lt;id>&quot;`, so instructions name the tool and
+// argument without quote or angle-bracket characters.
 export function buildBackgroundTaskNotificationText(input: {
   task: BackgroundTaskNotificationTask
   duration: string
@@ -98,7 +102,7 @@ export function buildBackgroundTaskNotificationText(input: {
       body = `${formatTaskSummaryLine(task)}\n`
     }
 
-    const resultCollectionInstruction = "All sibling background tasks are complete. Your next action should be to call `background_output(task_id=\"<id>\")` for each task ID above."
+    const resultCollectionInstruction = "All sibling background tasks are complete. Your next action should be to call `background_output` with each task ID above as `task_id`."
 
     return `<system-reminder>
 ${header}
@@ -121,6 +125,6 @@ ${header}
 **${remainingCount} task${remainingCount === 1 ? "" : "s"} still in progress.** You WILL be notified when ALL complete.
 ${isFailure ? "**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry, cancel remaining tasks, or continue." : "Do NOT poll - continue productive work."}
 
-Use \`background_output(task_id="${task.id}")\` to retrieve this result when ready.
+Use \`background_output\` with \`task_id\` \`${task.id}\` to retrieve this result when ready.
 </system-reminder>`
 }
