@@ -10,6 +10,7 @@ import { getErrorText } from "./error-classifier"
 import { createEmptyAssistantTurnRetryDedupeKey } from "./parent-wake-history-state"
 import { cloneParentWake, isRedundantParentWake, type PendingParentWake } from "./parent-wake-dedupe"
 import type { ToolWaitDeferralDecision } from "./parent-wake-session-history"
+import { visibleParentWakeText } from "./parent-wake-visible-notice"
 
 type ParentWakePromptDispatchInput = {
   readonly client: PromptDispatchClient
@@ -29,16 +30,23 @@ type ParentWakePromptDispatchInput = {
 }
 
 export async function sendParentWakePrompt(input: ParentWakePromptDispatchInput): Promise<void> {
-  const notificationContent = input.latestWake.notifications.join("\n\n")
+  const notificationContent = input.forceNoReply === true || !input.latestWake.shouldReply
+    ? input.latestWake.notifications.join("\n\n")
+    : visibleParentWakeText(input.latestWake)
   let dispatchStartedAt = Date.now()
   try {
     dispatchStartedAt = Date.now()
+    if (input.latestWake.shouldReply && input.forceNoReply !== true) {
+      input.latestWake.deliveryStartedAt ??= dispatchStartedAt
+    }
     const promptResult = await dispatchInternalPrompt({
       mode: "async",
       client: input.client,
       sessionID: input.sessionID,
       source: "background-agent-parent-wake",
-      ...(input.emptyAssistantTurnRetry
+      ...((input.latestWake.noAssistantOutputRetryCount ?? 0) > 0
+        ? { dedupeKey: `${createEmptyAssistantTurnRetryDedupeKey(input.latestWake)}\0no-output:${input.latestWake.noAssistantOutputRetryCount}` }
+        : input.emptyAssistantTurnRetry
         ? { dedupeKey: createEmptyAssistantTurnRetryDedupeKey(input.latestWake) }
         : {}),
       settleMs: 0,
