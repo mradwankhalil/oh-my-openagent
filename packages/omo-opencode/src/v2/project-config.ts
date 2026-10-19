@@ -7,6 +7,7 @@ import { log } from "../shared/logger"
 import { agentMarkdownDirectory, nestedAgentID, writeAgentMarkdown } from "./agent-markdown"
 import { createPermissionBridge, type V1AskInput } from "./permission-bridge"
 import { toolInputSchema, toolResult } from "./tool-schema"
+import { collectOmoToolIDs, scopeAgentToolVisibility } from "./agent-tool-visibility"
 
 type V2Context = Plugin.Context
 
@@ -256,6 +257,13 @@ export async function projectV1Surface(input: {
     if (!defaultAgent) return
     const nested = nestedAgentID(defaultAgent)
     if (editor.get(nameOr(editor, defaultAgent, nested))) editor.default(nameOr(editor, defaultAgent, nested))
+  })
+
+  // Scope delegation through agent permissions, before the host snapshots
+  // direct tools and Code Mode. Shared native utility replacements stay intact.
+  const omoToolIDs = collectOmoToolIDs(input.tools)
+  await input.ctx.agent.transform((editor) => {
+    scopeAgentToolVisibility(editor, omoToolIDs)
   })
 
   await projectTools({

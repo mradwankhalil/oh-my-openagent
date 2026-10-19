@@ -17,7 +17,7 @@ async function projection(fallbacks: Record<string, Server>) {
   directories.push(directory)
   let transform: (editor: object) => void = () => undefined
   const ctx = {
-    agent: { transform: async (fn: (editor: object) => void) => fn({}) },
+    agent: { transform: async (fn: (editor: object) => void) => fn({ list: () => [] }) },
     tool: { transform: async (fn: (editor: object) => void) => fn({}) },
     command: { transform: async (fn: (editor: object) => void) => fn({}) },
     mcp: { transform: async (fn: (editor: object) => void) => { transform = fn } },
