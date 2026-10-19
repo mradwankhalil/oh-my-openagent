@@ -253,7 +253,17 @@ export async function tryFallbackRetry(args: {
   }
 
   if (previousSessionID) {
-    await abortWithTimeout(client, previousSessionID).catch(() => {})
+    // One live session per task: the failed turn must actually stop before the
+    // replacement starts. A silent failure here leaves the original running beside it.
+    const aborted = await abortWithTimeout(client, previousSessionID)
+    if (!aborted) {
+      const retried = await abortWithTimeout(client, previousSessionID, 30_000)
+      deps.log("[background-agent] Abort before retry did not confirm:", {
+        taskId: task.id,
+        sessionID: previousSessionID,
+        retried,
+      })
+    }
   }
 
   queue.push({ task, input: retryInput, attemptID: nextAttempt.attemptId, rawConcurrencyKey: rawKey })
