@@ -85,7 +85,10 @@ export function storedMessagesToV1(messages: unknown, sessionID: string): V1Mess
   for (const message of messages) {
     if (!isRecord(message)) continue
     const translated = storedMessage(message, sessionID)
-    if (translated) view.push(translated)
+    if (translated) {
+      if (isRecord(message.time)) translated.info.time = { ...message.time }
+      view.push(translated)
+    }
   }
   return view
 }
