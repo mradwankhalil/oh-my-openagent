@@ -1,0 +1,49 @@
+From ce9893e52833ef9182ab55b4ba16c390c14f948c Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:35 +0300
+Subject: [PATCH] fix(v2): preserve stored message timestamps for wake
+ acknowledgement
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ packages/omo-opencode/src/v2/message-shape.test.ts | 7 +++++++
+ packages/omo-opencode/src/v2/message-shape.ts      | 5 ++++-
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/packages/omo-opencode/src/v2/message-shape.test.ts b/packages/omo-opencode/src/v2/message-shape.test.ts
+index 4b3bee271..ed5d704b9 100644
+--- a/packages/omo-opencode/src/v2/message-shape.test.ts
++++ b/packages/omo-opencode/src/v2/message-shape.test.ts
+@@ -87,6 +87,13 @@ describe("writeHookMessagesBack", () => {
+ })
+ 
+ describe("storedMessagesToV1", () => {
++  test("preserves stored timestamps used to acknowledge parent wakes without mutating the host message", () => {
++    const stored = { type: "assistant", id: "msg_time", time: { created: 123, completed: 456 }, content: [{ type: "text", text: "result" }] }
++    const view = storedMessagesToV1([stored], "ses_time")
++    expect(view[0]?.info.time).toEqual({ created: 123, completed: 456 })
++    expect(view[0]?.info.time).not.toBe(stored.time)
++  })
++
+   // OpenCode 2 stores a tool call as { type: "tool", id, name, state } (seen in session_message rows
+   // on 2.0.32); the v1 hook code reads part.tool and part.callID.
+   test("aliases the stored tool part name and id to the v1 tool and callID fields", () => {
+diff --git a/packages/omo-opencode/src/v2/message-shape.ts b/packages/omo-opencode/src/v2/message-shape.ts
+index bfb6a28d0..75d997db1 100644
+--- a/packages/omo-opencode/src/v2/message-shape.ts
++++ b/packages/omo-opencode/src/v2/message-shape.ts
+@@ -105,7 +105,10 @@ export function storedMessagesToV1(messages: unknown, sessionID: string): V1Mess
+   for (const message of messages) {
+     if (!isRecord(message)) continue
+     const translated = storedMessage(message, sessionID)
+-    if (translated) view.push(withV1ToolFields(translated))
++    if (translated) {
++      if (isRecord(message.time)) translated.info.time = { ...message.time }
++      view.push(withV1ToolFields(translated))
++    }
+   }
+   return view
+ }
+-- 
+2.55.0.windows.5
+

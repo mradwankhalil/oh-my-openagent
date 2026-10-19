@@ -1,0 +1,76 @@
+From 8cafdb0fd8b252b72ccd97a964c010871f472b24 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:35 +0300
+Subject: [PATCH] fix(v2): persist visible completion notices without resuming
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ .../src/v2/session-actions.recovery.test.ts      | 16 ++++++++++++++--
+ packages/omo-opencode/src/v2/session-actions.ts  |  5 ++++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/packages/omo-opencode/src/v2/session-actions.recovery.test.ts b/packages/omo-opencode/src/v2/session-actions.recovery.test.ts
+index 8c4cd0199..b16853cd7 100644
+--- a/packages/omo-opencode/src/v2/session-actions.recovery.test.ts
++++ b/packages/omo-opencode/src/v2/session-actions.recovery.test.ts
+@@ -4,6 +4,7 @@ import { sendPrompt } from "./session-actions"
+ 
+ function fixture() {
+   const calls: string[] = []
++  const promptInputs: { text: string; resume?: boolean }[] = []
+   const session: Record<string, unknown> = { agent: "compaction" }
+   const api = {
+     get: async () => session, context: async () => [], create: async () => ({}), interrupt: async () => ({}),
+@@ -11,9 +12,9 @@ function fixture() {
+     switchModel: async ({ model }: { model: unknown }) => { calls.push("model"); session.model = model },
+     update: async () => { calls.push("permissions") },
+     synthetic: async ({ text, resume }: { text: string; resume?: boolean }) => { expect(resume).toBe(false); calls.push(`synthetic:${text}`) },
+-    prompt: async ({ text }: { text: string }) => { calls.push(`prompt:${text}`) },
++    prompt: async (input: { text: string; resume?: boolean }) => { promptInputs.push(input); calls.push(`prompt:${input.text}`) },
+   }
+-  return { api, calls }
++  return { api, calls, promptInputs }
+ }
+ 
+ it("restores internal noReply config through control APIs without a user prompt or tool-result payload", async () => {
+@@ -31,3 +32,14 @@ it("keeps general noReply context synthetic and ordinary user prompts reply-prod
+   await sendPrompt(api, { path: { id: "ses_context" }, body: { parts: [{ type: "text", text: "user request" }] } })
+   expect(calls).toEqual(["synthetic:additional context", "prompt:user request"])
+ })
++
++it("persists a visible background completion notice without scheduling a model turn", async () => {
++  const { api, calls, promptInputs } = fixture()
++  await sendPrompt(api, { path: { id: "ses_notice" }, body: {
++    noReply: true,
++    metadata: { omoBackgroundTaskNotice: true },
++    parts: [{ type: "text", text: "[ALL BACKGROUND TASKS COMPLETE]\nbg_completed" }],
++  } })
++  expect(calls).toEqual(["prompt:[ALL BACKGROUND TASKS COMPLETE]\nbg_completed"])
++  expect(promptInputs[0]?.resume).toBe(false)
++})
+diff --git a/packages/omo-opencode/src/v2/session-actions.ts b/packages/omo-opencode/src/v2/session-actions.ts
+index bc9631fec..46ef1ae79 100644
+--- a/packages/omo-opencode/src/v2/session-actions.ts
++++ b/packages/omo-opencode/src/v2/session-actions.ts
+@@ -93,7 +93,7 @@ function toolDenies(value: unknown): Array<{ action: string; resource: string; e
+ type SessionApi = {
+   get: (input: { sessionID: string }) => Promise<Record<string, unknown>>
+   context: (input: { sessionID: string }) => Promise<unknown>
+-  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue"; files?: PromptFile[] }) => Promise<unknown>
++  prompt: (input: { sessionID: string; text: string; delivery?: "steer" | "queue"; files?: PromptFile[]; resume?: boolean }) => Promise<unknown>
+   create: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+   interrupt: (input: { sessionID: string }) => Promise<unknown>
+   switchAgent: (input: { sessionID: string; agent: string }) => Promise<unknown>
+@@ -183,6 +183,9 @@ export async function sendPrompt(api: SessionApi, input: unknown): Promise<unkno
+   const text = textFromPrompt(input)
+   const files = filesFromPrompt(input)
+   if (body.noReply === true) {
++    if (isRecord(body.metadata) && body.metadata.omoBackgroundTaskNotice === true) {
++      return api.prompt({ sessionID, text, resume: false })
++    }
+     // V2 configuration is persistent control-plane state. The v1 recovery
+     // sentinel is not a user request or context for the model/tool bridge.
+     if (text.startsWith(AGENT_RECOVERY_PROMPT) && text.includes("<!-- OMO_INTERNAL_NOREPLY -->")) {
+-- 
+2.55.0.windows.5
+

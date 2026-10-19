@@ -866,6 +866,30 @@
         "53-v2-native-plugin-capability"
       ],
       "orderNote": "After 52 and 53; never replay alone. RED: expected zero redundant dispatches, observed one; mixed hooks expected one, observed two. GREEN integration lane: 164 tests/21 files, full typecheck, nine TypeScript files LSP clean. Real isolated 2.0.32 host: active=[user], absent=[user,context-mode], actual child processes. Upstream variant on 502a4f0fd: 148 tests/21 files and full typecheck pass, signed PR #7. Offline non-repository profile: quiet setup 386ms, concurrent setups 645-676ms, loaded gap 98ms; historical five-second freeze NOT reproduced, no speculative startup change. Stage only."
+    },
+    {
+      "id": "57-v2-visible-completion-notice",
+      "title": "Persist a visible completion notice without resuming the model",
+      "commit": "8cafdb0fd8b252b72ccd97a964c010871f472b24",
+      "patch": "patches/57-v2-visible-completion-notice.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "A hidden noReply synthetic deposit is not a visible deadline fallback. An internal notice metadata flag maps only the completion notice to native session.prompt with resume:false, preserving ordinary noReply behavior in this lane.",
+      "markers": ["body.metadata.omoBackgroundTaskNotice"],
+      "overlapsWith": [],
+      "orderNote": "First of six signed idle-parent wake replay units (57-62). Native notice owner case is RED on old mapping and GREEN on the new mapping. The PR variant is narrowly adapted to 502a4f0fd; unrelated local recovery and attachment changes are excluded. Stage only."
+    },
+    {
+      "id": "58-v2-parent-wake-timestamps",
+      "title": "Retain stored V2 message timestamps for parent-wake acknowledgement",
+      "commit": "ce9893e52833ef9182ab55b4ba16c390c14f948c",
+      "patch": "patches/58-v2-parent-wake-timestamps.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "Real isolated host QA produced eight successful replies for a single wake because storedMessagesToV1 dropped time and acknowledgement could never establish that output followed dispatch. Clone raw time into the read-only V1 view without mutating the host message.",
+      "markers": ["translated.info.time"],
+      "overlapsWith": ["53-v2-tool-part-alias-transcript"],
+      "orderNote": "After 53; preserve its stored-tool aliases and add only timestamp propagation. Timestamp and native-history owner cases fail on the old mapping and pass after the fix. Hook write-back behavior is unchanged."
     }
   ],
   "externalFixes": [
