@@ -13,6 +13,7 @@ export type PendingParentWake = {
   shouldReply: boolean
   queuedAt?: number
   dispatchedAt?: number
+  deliveryStartedAt?: number
   noReplyAdmittedAt?: number
   toolCallDeferralStartedAt?: number
   allowEmptyAssistantTurnRetry?: boolean
@@ -37,6 +38,7 @@ export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
     shouldReply: wake.shouldReply,
     ...(wake.queuedAt !== undefined ? { queuedAt: wake.queuedAt } : {}),
     ...(wake.dispatchedAt !== undefined ? { dispatchedAt: wake.dispatchedAt } : {}),
+    ...(wake.deliveryStartedAt !== undefined ? { deliveryStartedAt: wake.deliveryStartedAt } : {}),
     ...(wake.noReplyAdmittedAt !== undefined ? { noReplyAdmittedAt: wake.noReplyAdmittedAt } : {}),
     ...(wake.toolCallDeferralStartedAt !== undefined
       ? { toolCallDeferralStartedAt: wake.toolCallDeferralStartedAt }
