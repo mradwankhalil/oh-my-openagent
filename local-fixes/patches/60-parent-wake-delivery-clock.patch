@@ -1,0 +1,55 @@
+From 64a1c57a40ba9c9e81b7cb269940c41de3f3166c Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:36 +0300
+Subject: [PATCH] fix(background-agent): preserve the wake delivery deadline
+ across retries
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ .../src/features/background-agent/parent-wake-dedupe.ts         | 2 ++
+ .../src/features/background-agent/parent-wake-pending-queue.ts  | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
+index 9960552e4..0cbd8568b 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-dedupe.ts
+@@ -13,6 +13,7 @@ export type PendingParentWake = {
+   shouldReply: boolean
+   queuedAt?: number
+   dispatchedAt?: number
++  deliveryStartedAt?: number
+   noReplyAdmittedAt?: number
+   toolCallDeferralStartedAt?: number
+   allowEmptyAssistantTurnRetry?: boolean
+@@ -38,6 +39,7 @@ export function cloneParentWake(wake: PendingParentWake): PendingParentWake {
+     shouldReply: wake.shouldReply,
+     ...(wake.queuedAt !== undefined ? { queuedAt: wake.queuedAt } : {}),
+     ...(wake.dispatchedAt !== undefined ? { dispatchedAt: wake.dispatchedAt } : {}),
++    ...(wake.deliveryStartedAt !== undefined ? { deliveryStartedAt: wake.deliveryStartedAt } : {}),
+     ...(wake.noReplyAdmittedAt !== undefined ? { noReplyAdmittedAt: wake.noReplyAdmittedAt } : {}),
+     ...(wake.toolCallDeferralStartedAt !== undefined
+       ? { toolCallDeferralStartedAt: wake.toolCallDeferralStartedAt }
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
+index 1dea3cf80..c6bb4cc1d 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-pending-queue.ts
+@@ -62,6 +62,7 @@ export class ParentWakePendingQueue {
+       if (notificationsChanged) {
+         delete pendingWake.noReplyAdmittedAt
+         delete pendingWake.noAssistantOutputRetryCount
++        delete pendingWake.deliveryStartedAt
+       }
+       return
+     }
+@@ -88,6 +89,7 @@ export class ParentWakePendingQueue {
+       pendingWake.shouldReply = pendingWake.shouldReply || latestWake.shouldReply
+       pendingWake.promptContext = latestWake.promptContext
+       pendingWake.noReplyAdmittedAt ??= latestWake.noReplyAdmittedAt
++      pendingWake.deliveryStartedAt ??= latestWake.deliveryStartedAt
+       pendingWake.toolCallDeferralStartedAt ??= latestWake.toolCallDeferralStartedAt
+       pendingWake.allowEmptyAssistantTurnRetry ||= latestWake.allowEmptyAssistantTurnRetry
+       if (latestWake.gateHoldExpiresAt !== undefined) {
+-- 
+2.55.0.windows.5
+

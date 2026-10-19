@@ -1,0 +1,71 @@
+From 7829c92e1faa302f19464a26d09ecc37b6aa0fe1 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Mon, 19 Oct 2026 23:14:36 +0300
+Subject: [PATCH] fix(background-agent): reject empty assistant content as wake
+ acknowledgement
+
+Signed-off-by: Mohamed R. Khalil <m.radwan.khalil@gmail.com>
+---
+ .../parent-wake-assistant-error-history.test.ts      | 12 +++++++-----
+ .../background-agent/parent-wake-session-history.ts  |  2 +-
+ 2 files changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-assistant-error-history.test.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-assistant-error-history.test.ts
+index 51996fd2b..73588811a 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-assistant-error-history.test.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-assistant-error-history.test.ts
+@@ -41,14 +41,15 @@ function createNotifier(messages: readonly SessionMessageStub[]): ParentWakeNoti
+   )
+ }
+ 
+-describe("ParentWakeNotifier assistant error history", () => {
++for (const finish of ["error", "stop"]) describe(`ParentWakeNotifier assistant ${finish} history`, () => {
+   afterEach(() => {
+     releaseAllPromptAsyncReservationsForTesting()
+   })
+ 
+-  test("requeues late session.error when history only shows the injected wake plus an assistant error turn with no parts", async () => {
++  test(`requeues late session.error when history only shows the injected wake plus an empty assistant ${finish} turn`, async () => {
+     // given
+     const dispatchedAt = Date.now()
++    const assistantTime = { created: dispatchedAt + 2 }
+     const notifier = createNotifier([
+       {
+         info: {
+@@ -67,9 +68,9 @@ describe("ParentWakeNotifier assistant error history", () => {
+       {
+         info: {
+           role: "assistant",
+-          finish: "error",
+-          error: { message: "late failure" },
+-          time: { created: dispatchedAt + 2 },
++          finish,
++          ...(finish === "error" ? { error: { message: "late failure" } } : {}),
++          time: assistantTime,
+         },
+         parts: [],
+       },
+@@ -79,6 +80,7 @@ describe("ParentWakeNotifier assistant error history", () => {
+     try {
+       await notifier.flushPendingParentWake("parent-assistant-error-history")
+       expect(notifier.getDispatchedParentWakes().has("parent-assistant-error-history")).toBe(true)
++      assistantTime.created = Date.now() + 1
+ 
+       // when
+       const requeued = await notifier.requeueDispatchedParentWake(
+diff --git a/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts b/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
+index 2b8248df9..5600f1ec2 100644
+--- a/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
++++ b/packages/omo-opencode/src/features/background-agent/parent-wake-session-history.ts
+@@ -200,7 +200,7 @@ function parentWakeMessageHasOutput(message: ParentWakeSessionMessage): boolean
+   if (role === "assistant" && (finish === "error" || error !== undefined)) {
+     return false
+   }
+-  if (!message.parts || message.parts.length === 0) {
++  if (!message.parts) {
+     return role === "assistant"
+   }
+   return message.parts.some((part) => {
+-- 
+2.55.0.windows.5
+

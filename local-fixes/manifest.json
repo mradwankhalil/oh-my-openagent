@@ -890,6 +890,30 @@
       "markers": ["translated.info.time"],
       "overlapsWith": ["53-v2-tool-part-alias-transcript"],
       "orderNote": "After 53; preserve its stored-tool aliases and add only timestamp propagation. Timestamp and native-history owner cases fail on the old mapping and pass after the fix. Hook write-back behavior is unchanged."
+    },
+    {
+      "id": "59-parent-wake-empty-output",
+      "title": "Do not acknowledge a parent wake from explicitly empty assistant content",
+      "commit": "7829c92e1faa302f19464a26d09ecc37b6aa0fe1",
+      "patch": "patches/59-parent-wake-empty-output.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "After timestamps are preserved, an empty native assistant content array must remain a failed delivery rather than clearing the wake. Preserve the legacy absent-parts behavior, but require substantive output when parts are explicitly supplied.",
+      "markers": [],
+      "overlapsWith": [],
+      "orderNote": "After 58. Behavioral branch correction has no reliable unique positive bundle literal, so markers is empty; source commit, replay patch and owner RED/GREEN test provide verification. The empty stop-turn owner case fails when this correction is removed."
+    },
+    {
+      "id": "60-parent-wake-delivery-clock",
+      "title": "Preserve the delivery-start clock across parent-wake queue copies",
+      "commit": "64a1c57a40ba9c9e81b7cb269940c41de3f3166c",
+      "patch": "patches/60-parent-wake-delivery-clock.patch",
+      "pr": "https://github.com/SwarmStorm/oh-my-openagent/pull/12",
+      "upstreamIssue": "https://github.com/code-yeongyu/oh-my-openagent/issues/10624",
+      "why": "Bound no-output retry duration from the first reply attempt, not time safely waiting behind an active parent, and do not reset that clock when the wake is copied between dispatched and pending storage.",
+      "markers": ["deliveryStartedAt: wake.deliveryStartedAt"],
+      "overlapsWith": [],
+      "orderNote": "State prerequisite for 61 and 62. New notifications reset the clock; retry copies preserve it. Existing active-parent defer controls and the deadline owner case remain green."
     }
   ],
   "externalFixes": [
