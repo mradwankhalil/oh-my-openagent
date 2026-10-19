@@ -3,6 +3,7 @@ import type { ParentWakePromptContext } from "./parent-wake-dedupe"
 
 type ParentWakePromptBody = ParentWakePromptContext & {
   readonly noReply?: boolean
+  readonly metadata?: { readonly omoBackgroundTaskNotice?: boolean }
   readonly parts: { readonly type: "text"; readonly text: string }[]
 }
 

@@ -271,6 +271,6 @@ describe("BackgroundManager parent wake empty-turn recovery", () => {
 
     // then
     expect(promptCalls).toHaveLength(2)
-    expect(JSON.stringify(promptCalls[1]?.body.parts)).toContain(notification)
+    expect(promptCalls[1]?.body.parts[0]?.text).toBe("done\n<!-- OMO_INTERNAL_INITIATOR -->")
   })
 })

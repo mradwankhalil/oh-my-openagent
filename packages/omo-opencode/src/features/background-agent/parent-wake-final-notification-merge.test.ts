@@ -80,7 +80,7 @@ describe("ParentWakeNotifier final notification merge", () => {
       // then
       expect(promptAsyncCalls).toHaveLength(1)
       const notificationText = getPromptText(promptAsyncCalls[0])
-      expect(notificationText.startsWith("<system-reminder>\n[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]")).toBe(true)
+      expect(notificationText.startsWith("[BACKGROUND TASK COMPLETED]\n[ALL BACKGROUND TASKS COMPLETE]")).toBe(true)
       expect(notificationText).not.toContain("[BACKGROUND TASK RESULT READY]")
       expect(notificationText).not.toContain("still in progress")
       expect(promptAsyncCalls[0]?.body.noReply).toBe(false)
