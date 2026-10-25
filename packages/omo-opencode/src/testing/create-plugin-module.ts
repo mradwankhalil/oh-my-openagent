@@ -50,6 +50,8 @@ type StartupToastClient = {
 
 type HooksWithRuntimeLifecycle = Hooks & {
   "experimental.compaction.autocontinue"?: CompactionAutocontinueHook
+  /** fix 73: the process-wide startup check alone, for root sessions no V2 instance owns. */
+  "omo.process-startup-check"?: (input: { event: { type: string; properties?: unknown } }) => void
   dispose?: () => Promise<void>
 }
 
@@ -334,6 +336,8 @@ export function createPluginModule(overrides: Partial<PluginModuleDeps> = {}): P
       ...pluginInterface,
 
       "experimental.session.compacting": createSessionCompactingHandler(hooks),
+
+      ...(hooks.autoUpdateChecker ? { "omo.process-startup-check": hooks.autoUpdateChecker.event } : {}),
 
       "experimental.compaction.autocontinue": createCompactionAutocontinueHandler(hooks),
 

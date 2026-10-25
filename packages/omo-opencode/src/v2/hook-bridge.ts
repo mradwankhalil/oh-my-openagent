@@ -10,6 +10,41 @@ type V2Context = Plugin.Context
 
 type V1Handler = (input: unknown, output?: unknown) => Promise<void> | void
 
+/** Plugin hook key for the process-wide startup check (auto-update checker), see fix 73. */
+export const PROCESS_STARTUP_CHECK_HOOK = "omo.process-startup-check"
+
+/**
+ * fix 73: an unowned root session.created is handed to the startup check once per PROCESS.
+ *
+ * The check is process-wide work (provider list fetch + capability cache rewrite + npm update
+ * check), so without this gate every warm folder's instance would run it for the same event.
+ * The auto-update checker keeps its own per-instance gate; this one covers the handoff, which
+ * by construction fires in several instances at once. Stored on globalThis behind a registered
+ * symbol so it survives per-location plugin module re-imports within one OpenCode process.
+ */
+const PROCESS_STARTUP_CHECK_HANDOFF_SYMBOL = Symbol.for("omo.v2.processStartupCheckHandoff.v1")
+
+function claimProcessStartupCheckHandoff(): boolean {
+  const holder = globalThis as Record<symbol, boolean | undefined>
+  if (holder[PROCESS_STARTUP_CHECK_HANDOFF_SYMBOL] === true) return false
+  holder[PROCESS_STARTUP_CHECK_HANDOFF_SYMBOL] = true
+  return true
+}
+
+/** Test-only: release the once-per-process handoff gate. */
+export function resetProcessStartupCheckHandoffForTests(): void {
+  const holder = globalThis as Record<symbol, boolean | undefined>
+  delete holder[PROCESS_STARTUP_CHECK_HANDOFF_SYMBOL]
+}
+
+function isRootSessionCreated(raw: unknown): boolean {
+  if (!isRecord(raw) || raw.type !== "session.created") return false
+  const data = isRecord(raw.data) ? raw.data : isRecord(raw.properties) ? raw.properties : {}
+  const info = isRecord(data.info) ? data.info : {}
+  const parentID = data.parentID ?? info.parentID
+  return !(typeof parentID === "string" && parentID.length > 0)
+}
+
 export type V1HookMap = Record<string, unknown>
 
 function asHandler(value: unknown): V1Handler | undefined {
@@ -267,6 +302,7 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?: 
   }
 
   const autocontinue = asHandler(hooks["experimental.compaction.autocontinue"])
+  const processStartupCheck = asHandler(hooks[PROCESS_STARTUP_CHECK_HOOK])
   if (eventHandler || autocontinue) {
     void (async () => {
       try {
@@ -274,7 +310,16 @@ export async function registerV1Hooks(ctx: V2Context, hooks: V1HookMap, state?: 
         // the session tree may run the V1 hooks for it (one retry, not one per warm folder).
         const ownsSessionEvent = createSessionOwnership(ctx, state)
         for await (const raw of ctx.event.subscribe({ signal: controller.signal })) {
-          if (!(await ownsSessionEvent(raw))) continue
+          if (!(await ownsSessionEvent(raw))) {
+            // fix 73 (opencode-v2): creating a session does not boot its folder's plugin instance, so
+            // with fix 50 nobody handled a new folder's root session.created and the process-wide
+            // startup check (capability + connected-provider cache refresh) never ran. It dedupes per
+            // process, so it alone still sees unowned root sessions; the per-session hooks do not.
+            if (processStartupCheck && isRootSessionCreated(raw) && claimProcessStartupCheckHandoff()) {
+              await safeCall("process-startup-check", () => processStartupCheck({ event: toV1Event(raw) }))
+            }
+            continue
+          }
           const event = toV1Event(raw)
           noteRuntimeEvent(state, event)
           if (eventHandler) await safeCall("event", () => eventHandler({ event }))
